@@ -1,0 +1,95 @@
+name: APK bauen
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v4
+
+      - name: Java 17 einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Projekt aus ZIP entpacken
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf extracted
+          mkdir -p extracted
+
+          ZIPFILE="$(find . -maxdepth 1 -type f -iname '*.zip' -print -quit)"
+          if [ -z "$ZIPFILE" ]; then
+            echo "FEHLER: Keine Projekt-ZIP im Repository gefunden."
+            exit 1
+          fi
+
+          echo "ZIP gefunden: $ZIPFILE"
+          unzip -q -o "$ZIPFILE" -d extracted
+
+          BUILD_FILE="$(find extracted -type f -path '*/app/build.gradle.kts' -print -quit)"
+          if [ -z "$BUILD_FILE" ]; then
+            echo "FEHLER: app/build.gradle.kts wurde in der ZIP nicht gefunden."
+            find extracted -maxdepth 6 -type f | sort
+            exit 1
+          fi
+
+          APP_DIR="$(dirname "$BUILD_FILE")"
+          PROJECT_DIR="$(dirname "$APP_DIR")"
+          echo "Projekt gefunden: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          # Die Projekt-ZIP wurde ursprünglich mit AGP 9.4/Gradle 9.6 erstellt.
+          # Kotlin 2.4.10 ist offiziell bis AGP 9.1 und Gradle 9.5 voll unterstützt.
+          # Deshalb verwenden wir die stabile, zueinander passende Kombination:
+          # AGP 9.1.1 + Gradle 9.3.1 + JDK 17 + compileSdk 37.
+          sed -i 's/version "9.4.0"/version "9.1.1"/' "$PROJECT_DIR/build.gradle.kts"
+
+          # Bei externem kotlin-android unter AGP 9.x müssen Built-in Kotlin
+          # und die neue DSL gemeinsam deaktiviert werden.
+          grep -q '^android.builtInKotlin=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.builtInKotlin=false' >> "$PROJECT_DIR/gradle.properties"
+          grep -q '^android.newDsl=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.newDsl=false' >> "$PROJECT_DIR/gradle.properties"
+
+          echo "--- build.gradle.kts ---"
+          cat "$PROJECT_DIR/build.gradle.kts"
+          echo "--- gradle.properties ---"
+          cat "$PROJECT_DIR/gradle.properties"
+
+      - name: Android SDK prüfen
+        shell: bash
+        run: |
+          set -e
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            echo "Android API 37 ist nicht vorinstalliert; versuche Installation."
+            yes | sdkmanager --licenses >/dev/null || true
+            sdkmanager "platforms;android-37" "build-tools;36.0.0"
+          fi
+          test -d "$ANDROID_HOME/platforms/android-37"
+
+      - name: Gradle 9.3.1 einrichten
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: APK bauen
+        shell: bash
+        run: |
+          set -e
+          echo "Baue aus: $PROJECT_DIR"
+          gradle -p "$PROJECT_DIR" :app:assembleDebug --no-daemon --stacktrace
+
+      - name: APK bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: PVCompact-APK
+          path: "**/app/build/outputs/apk/debug/app-debug.apk"
+          if-no-files-found: error
