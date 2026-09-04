@@ -74,8 +74,8 @@ class OctopusApi(private val config: OctopusConfig) {
 
     private fun loadRates(token: String): List<OctopusRate> {
         val query = """
-            query GetDayAheadPrices(\$accountNumber: String!) {
-              account(accountNumber: \$accountNumber) {
+            query GetDayAheadPrices(${'$'}accountNumber: String!) {
+              account(accountNumber: ${'$'}accountNumber) {
                 properties {
                   electricityMalos {
                     agreements {
@@ -145,12 +145,12 @@ class OctopusApi(private val config: OctopusConfig) {
         val start = today.minusDays(1).toString()
         val end = today.toString()
         val query = """
-            query GetConsumption(\$accountNumber: String!, \$start: Date!, \$end: Date!) {
-              account(accountNumber: \$accountNumber) {
+            query GetConsumption(${'$'}accountNumber: String!, ${'$'}start: Date!, ${'$'}end: Date!) {
+              account(accountNumber: ${'$'}accountNumber) {
                 properties {
                   measurements(
-                    startOn: \$start,
-                    endOn: \$end,
+                    startOn: ${'$'}start,
+                    endOn: ${'$'}end,
                     timezone: "Europe/Berlin",
                     first: 200,
                     utilityFilters: [{electricityFilters: {readingDirection: CONSUMPTION, readingFrequencyType: FIFTEEN_MIN_INTERVAL}}]
