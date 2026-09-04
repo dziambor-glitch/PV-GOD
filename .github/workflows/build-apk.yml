@@ -2,8 +2,6 @@ name: APK bauen
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
@@ -22,7 +20,7 @@ jobs:
       - name: Android SDK einrichten
         uses: android-actions/setup-android@v3
 
-      - name: Projekt aus ZIP entpacken
+      - name: Projekt aus ZIP entpacken und v0.3 anwenden
         shell: bash
         run: |
           set -euo pipefail
@@ -47,14 +45,18 @@ jobs:
           APP_DIR="$(dirname "$BUILD_FILE")"
           PROJECT_DIR="$(dirname "$APP_DIR")"
           echo "Projekt gefunden: $PROJECT_DIR"
+
+          if [ -d overrides ]; then
+            echo "v0.3-Dateien werden eingespielt..."
+            cp -a overrides/. "$PROJECT_DIR/"
+          fi
+
+          BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          # Stabile Kombination, die auf GitHub sicher verfügbar ist.
+          # Bewährte Build-Kombination vom erfolgreichen APK-Build #5.
           sed -i 's/version "9.4.0"/version "9.1.1"/' "$PROJECT_DIR/build.gradle.kts"
           sed -E -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]+/compileSdk = 36/' "$BUILD_FILE"
-
-          # Compose 1.12 benötigt API 37. Da API 37 über sdkmanager auf diesem
-          # Runner derzeit nicht angeboten wird, verwenden wir Compose 1.11.
           sed -i 's/androidx.compose:compose-bom:2026.08.00/androidx.compose:compose-bom:2026.04.01/' "$BUILD_FILE"
 
           if ! grep -q '^@file:Suppress' "$BUILD_FILE"; then
@@ -89,6 +91,6 @@ jobs:
       - name: APK bereitstellen
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-APK
+          name: PVCompact-v0.3-APK
           path: "**/app/build/outputs/apk/debug/app-debug.apk"
           if-no-files-found: error
