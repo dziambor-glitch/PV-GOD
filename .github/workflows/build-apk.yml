@@ -53,15 +53,20 @@ jobs:
             cp -a overrides/. "$PROJECT_DIR/"
           fi
 
-          if [ -d overrides_gz ]; then
-            echo "Komprimierte v0.3-Dateien werden eingespielt..."
-            while IFS= read -r PACKED; do
-              REL="${PACKED#overrides_gz/}"
-              OUT="$PROJECT_DIR/${REL%.gz.b64}"
-              mkdir -p "$(dirname "$OUT")"
-              base64 -d "$PACKED" | gzip -dc > "$OUT"
-              echo "erstellt: $OUT"
-            done < <(find overrides_gz -type f -name '*.gz.b64' | sort)
+          # MainActivity wird aus kleinen, verifizierten Teilen rekonstruiert.
+          # Die alte overrides_gz-Datei wird bewusst NICHT mehr verwendet.
+          if compgen -G 'override_parts/MainActivity.part*' > /dev/null; then
+            echo "MainActivity wird rekonstruiert..."
+            cat override_parts/MainActivity.part* > /tmp/MainActivity.kt.gz.b64
+            base64 -d /tmp/MainActivity.kt.gz.b64 > /tmp/MainActivity.kt.gz
+            gzip -t /tmp/MainActivity.kt.gz
+            mkdir -p "$PROJECT_DIR/app/src/main/java/de/pvcompact/app"
+            gzip -dc /tmp/MainActivity.kt.gz > "$PROJECT_DIR/app/src/main/java/de/pvcompact/app/MainActivity.kt"
+            test -s "$PROJECT_DIR/app/src/main/java/de/pvcompact/app/MainActivity.kt"
+            echo "MainActivity erfolgreich erstellt."
+          else
+            echo "FEHLER: MainActivity-Teile fehlen."
+            exit 1
           fi
 
           BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
