@@ -2,6 +2,8 @@ name: APK bauen
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
@@ -49,6 +51,17 @@ jobs:
           if [ -d overrides ]; then
             echo "v0.3-Dateien werden eingespielt..."
             cp -a overrides/. "$PROJECT_DIR/"
+          fi
+
+          if [ -d overrides_gz ]; then
+            echo "Komprimierte v0.3-Dateien werden eingespielt..."
+            while IFS= read -r PACKED; do
+              REL="${PACKED#overrides_gz/}"
+              OUT="$PROJECT_DIR/${REL%.gz.b64}"
+              mkdir -p "$(dirname "$OUT")"
+              base64 -d "$PACKED" | gzip -dc > "$OUT"
+              echo "erstellt: $OUT"
+            done < <(find overrides_gz -type f -name '*.gz.b64' | sort)
           fi
 
           BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
