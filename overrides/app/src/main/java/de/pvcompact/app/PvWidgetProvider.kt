@@ -17,7 +17,7 @@ class PvWidgetProvider : AppWidgetProvider() {
             try {
                 val store = CredentialStore(context)
                 if (store.hasCredentials()) {
-                    val (live, _) = PvOutputApi(store.getApiKey(), store.getSystemId()).loadLive()
+                    val (live, _) = PvOutputApi(store.getApiKey(), store.getSystemId(), context).loadLiveForWidget()
                     val forecast = store.getForecastConfig()?.let { config -> runCatching { PvForecastApi(config).load() }.getOrNull() }
                     val octopus = runCatching { OctopusApi(store.getOctopusConfig()).load() }.getOrNull()
                     octopus?.refreshedToken?.let(store::updateOctopusRefreshToken)
