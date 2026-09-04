@@ -52,6 +52,15 @@ jobs:
           sed -i 's/version "9.4.0"/version "9.1.1"/' "$PROJECT_DIR/build.gradle.kts"
           sed -E -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]+/compileSdk = 36/' "$BUILD_FILE"
 
+          if ! grep -q '^@file:Suppress' "$BUILD_FILE"; then
+            {
+              echo '@file:Suppress("DEPRECATION", "DEPRECATION_ERROR")'
+              echo
+              cat "$BUILD_FILE"
+            } > "$BUILD_FILE.tmp"
+            mv "$BUILD_FILE.tmp" "$BUILD_FILE"
+          fi
+
           grep -q '^android.builtInKotlin=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.builtInKotlin=false' >> "$PROJECT_DIR/gradle.properties"
           grep -q '^android.newDsl=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.newDsl=false' >> "$PROJECT_DIR/gradle.properties"
 
