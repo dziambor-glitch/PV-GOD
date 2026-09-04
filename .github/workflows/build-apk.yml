@@ -69,6 +69,36 @@ jobs:
             exit 1
           fi
 
+          # Einmaliger Octopus-Verbindungsdialog als zweiter Launcher-Eintrag.
+          # So muss die große MainActivity für diesen Übergangs-Login nicht erneut
+          # komprimiert/zerlegt werden. Nach erfolgreicher Anmeldung teilt er sich
+          # denselben verschlüsselten CredentialStore mit der Haupt-App.
+          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ] && ! grep -q 'OctopusConnectActivity' "$MANIFEST"; then
+            python3 - "$MANIFEST" <<'PY'
+          import sys
+          from pathlib import Path
+
+          manifest = Path(sys.argv[1])
+          text = manifest.read_text(encoding="utf-8")
+          activity = '''
+                  <activity
+                      android:name=".OctopusConnectActivity"
+                      android:exported="true"
+                      android:label="PVCompact · Octopus">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+          '''
+          if "</application>" not in text:
+              raise SystemExit("FEHLER: </application> im AndroidManifest nicht gefunden")
+          text = text.replace("</application>", activity + "    </application>", 1)
+          manifest.write_text(text, encoding="utf-8")
+          PY
+          fi
+
           BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
