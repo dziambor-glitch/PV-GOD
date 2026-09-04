@@ -50,7 +50,7 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           sed -i 's/version "9.4.0"/version "9.1.1"/' "$PROJECT_DIR/build.gradle.kts"
-          sed -E -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]+/compileSdk = 36/' "$BUILD_FILE"
+          sed -E -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]+/compileSdk = 37/' "$BUILD_FILE"
 
           if ! grep -q '^@file:Suppress' "$BUILD_FILE"; then
             {
@@ -64,11 +64,11 @@ jobs:
           grep -q '^android.builtInKotlin=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.builtInKotlin=false' >> "$PROJECT_DIR/gradle.properties"
           grep -q '^android.newDsl=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.newDsl=false' >> "$PROJECT_DIR/gradle.properties"
 
-      - name: Android 36 installieren
+      - name: Android 37 installieren
         shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          sdkmanager "platforms;android-37" "build-tools;36.0.0"
 
       - name: Gradle 9.3.1 einrichten
         uses: gradle/actions/setup-gradle@v4
