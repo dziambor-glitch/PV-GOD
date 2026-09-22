@@ -14,161 +14,113 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
+/**
+ * Octopus Energy DE / Kraken integration for PV Compact 1.0.
+ *
+ * Primary auth methods are API key or refresh token. Email/password auth is
+ * deliberately not used because Kraken deprecated those GraphQL input fields.
+ * The local Octopus Go time window remains usable even when no API credential
+ * is configured, while Smart-Meter import needs authenticated access.
+ */
 class OctopusApi(private val config: OctopusConfig) {
     private val endpoint = "https://api.oeg-kraken.energy/v1/graphql/"
     private val berlin = ZoneId.of("Europe/Berlin")
 
+    private data class AuthResult(val token: String, val refreshToken: String?)
+    private data class ImportResult(
+        val totalKwh: Double,
+        val date: String,
+        val cheapKwh: Double,
+        val normalKwh: Double,
+        val costEuro: Double
+    )
+
     fun load(): OctopusData {
-        val hasApiAuth = config.apiKey.isNotBlank() || config.refreshToken.isNotBlank()
-        if (!hasApiAuth || config.accountNumber.isBlank()) {
-            return fixedFallback(
-                if (config.accountNumber.isBlank()) "Octopus-Kundennummer/API optional hinterlegen. Bis dahin wird dein Go-Zeitfenster verwendet."
-                else "Kein Kraken API-Key/Refresh-Token hinterlegt. Go-Zeitfenster wird lokal berechnet."
-            )
+        val localRates = localGoRates()
+        val current = localGoPrice(LocalTime.now(berlin))
+        val hasAuth = config.apiKey.isNotBlank() || config.refreshToken.isNotBlank()
+        if (!hasAuth || config.accountNumber.isBlank()) {
+            val note = when {
+                config.accountNumber.isBlank() -> "Für Smart-Meter-Daten noch die Octopus-Kundennummer eintragen. Der Go-Tarif wird lokal angezeigt."
+                else -> "Für Smart-Meter-Daten API-Key oder Refresh-Token eintragen. Der Go-Tarif wird lokal angezeigt."
+            }
+            return OctopusData(localRates, current, "Octopus Go · lokaler Tarif", note)
         }
 
         return try {
             val auth = obtainToken()
-            val rates = loadRates(auth.token)
             val import = runCatching { loadImport(auth.token) }.getOrNull()
-            val current = findCurrentPrice(rates)
             OctopusData(
-                rates = rates,
+                rates = localRates,
                 currentPriceCents = current,
-                source = "Octopus Energy API",
-                note = if (rates.isEmpty()) "Die API hat aktuell keine Tarifwerte geliefert; Go-Fallback wird angezeigt." else null,
-                netImportKwh = import?.first,
-                netImportDate = import?.second,
+                source = "Octopus Smart Meter + Go-Tarif",
+                note = if (import == null) "Anmeldung erfolgreich, aber aktuell keine Smart-Meter-Verbrauchswerte verfügbar." else null,
+                netImportKwh = import?.totalKwh,
+                netImportDate = import?.date,
+                cheapImportKwh = import?.cheapKwh,
+                normalImportKwh = import?.normalKwh,
+                estimatedCostEuro = import?.costEuro,
                 refreshedToken = auth.refreshToken
-            ).let { apiData ->
-                if (apiData.rates.isEmpty()) fixedFallback(apiData.note).copy(
-                    netImportKwh = apiData.netImportKwh,
-                    netImportDate = apiData.netImportDate,
-                    refreshedToken = apiData.refreshedToken
-                ) else apiData
-            }
+            )
         } catch (e: Exception) {
-            fixedFallback("Octopus API derzeit nicht verfügbar: ${e.message?.take(120) ?: "unbekannter Fehler"}")
+            OctopusData(
+                rates = localRates,
+                currentPriceCents = current,
+                source = "Octopus Go · lokaler Tarif",
+                note = "Octopus API: ${e.message?.take(180) ?: "unbekannter Fehler"}"
+            )
         }
     }
-
-    private data class AuthResult(val token: String, val refreshToken: String?)
 
     private fun obtainToken(): AuthResult {
         val input = JSONObject()
-        if (config.refreshToken.isNotBlank()) input.put("refreshToken", config.refreshToken)
-        else input.put("APIKey", config.apiKey)
-
-        val payload = JSONObject()
-            .put("query", "mutation ObtainKrakenToken(\$input: ObtainJSONWebTokenInput!) { obtainKrakenToken(input: \$input) { token refreshToken refreshExpiresIn } }")
-            .put("variables", JSONObject().put("input", input))
-
+        when {
+            config.refreshToken.isNotBlank() -> input.put("refreshToken", config.refreshToken)
+            config.apiKey.isNotBlank() -> input.put("APIKey", config.apiKey)
+            else -> throw IllegalStateException("Kein Octopus API-Key oder Refresh-Token hinterlegt")
+        }
+        val query = "mutation ObtainKrakenToken(${ '$' }input: ObtainJSONWebTokenInput!) { obtainKrakenToken(input: ${ '$' }input) { token refreshToken refreshExpiresIn } }"
+        val payload = JSONObject().put("query", query).put("variables", JSONObject().put("input", input))
         val root = post(payload, null)
         throwGraphQlErrors(root)
         val auth = root.optJSONObject("data")?.optJSONObject("obtainKrakenToken")
-            ?: throw IllegalStateException("Keine Authentifizierungsantwort")
+            ?: throw IllegalStateException("Keine Kraken-Authentifizierungsantwort")
         val token = auth.optString("token")
-        if (token.isBlank()) throw IllegalStateException("Kein Kraken-Token erhalten")
-        return AuthResult(token, auth.optString("refreshToken").takeIf { it.isNotBlank() })
+        if (token.isBlank()) throw IllegalStateException("Kraken hat keinen Token geliefert")
+        val refresh = auth.optString("refreshToken").takeIf { it.isNotBlank() }
+        return AuthResult(token, refresh)
     }
 
-    private fun loadRates(token: String): List<OctopusRate> {
-        val query = """
-            query GetDayAheadPrices(${'$'}accountNumber: String!) {
-              account(accountNumber: ${'$'}accountNumber) {
-                properties {
-                  electricityMalos {
-                    agreements {
-                      unitRateForecast {
-                        validFrom
-                        validTo
-                        unitRateInformation {
-                          ... on TimeOfUseProductUnitRateInformation {
-                            rates {
-                              netUnitRateCentsPerKwh
-                              latestGrossUnitRateCentsPerKwh
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-        """.trimIndent()
-        val payload = JSONObject()
-            .put("query", query)
-            .put("variables", JSONObject().put("accountNumber", config.accountNumber))
-        val root = post(payload, token)
-        throwGraphQlErrors(root)
-
-        val result = mutableListOf<OctopusRate>()
-        val properties = root.optJSONObject("data")?.optJSONObject("account")?.optJSONArray("properties") ?: JSONArray()
-        for (p in 0 until properties.length()) {
-            val malos = properties.optJSONObject(p)?.optJSONArray("electricityMalos") ?: continue
-            for (m in 0 until malos.length()) {
-                val agreements = malos.optJSONObject(m)?.optJSONArray("agreements") ?: continue
-                for (a in 0 until agreements.length()) {
-                    val agreement = agreements.optJSONObject(a) ?: continue
-                    val forecastAny = agreement.opt("unitRateForecast")
-                    val forecasts = when (forecastAny) {
-                        is JSONArray -> forecastAny
-                        is JSONObject -> JSONArray().put(forecastAny)
-                        else -> JSONArray()
-                    }
-                    for (f in 0 until forecasts.length()) {
-                        val item = forecasts.optJSONObject(f) ?: continue
-                        val from = item.optString("validFrom")
-                        val to = item.optString("validTo")
-                        val info = item.optJSONObject("unitRateInformation") ?: continue
-                        val rates = info.optJSONArray("rates") ?: continue
-                        for (r in 0 until rates.length()) {
-                            val rate = rates.optJSONObject(r) ?: continue
-                            val gross = when {
-                                rate.has("latestGrossUnitRateCentsPerKwh") && !rate.isNull("latestGrossUnitRateCentsPerKwh") -> rate.optDouble("latestGrossUnitRateCentsPerKwh", Double.NaN)
-                                else -> rate.optDouble("netUnitRateCentsPerKwh", Double.NaN)
-                            }
-                            if (from.isNotBlank() && to.isNotBlank() && gross.isFinite()) {
-                                result += OctopusRate(from, to, gross)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return result.distinctBy { Triple(it.validFrom, it.validTo, it.grossCentsPerKwh) }.sortedBy { it.validFrom }
-    }
-
-    private fun loadImport(token: String): Pair<Double, String>? {
+    private fun loadImport(token: String): ImportResult? {
         val today = LocalDate.now(berlin)
-        val start = today.minusDays(1).toString()
-        val end = today.toString()
+        val start = today.minusDays(2).toString()
+        val end = today.plusDays(1).toString()
         val query = """
-            query GetConsumption(${'$'}accountNumber: String!, ${'$'}start: Date!, ${'$'}end: Date!) {
-              account(accountNumber: ${'$'}accountNumber) {
+            query GetConsumption(${ '$' }accountNumber: String!, ${ '$' }start: Date!, ${ '$' }end: Date!) {
+              account(accountNumber: ${ '$' }accountNumber) {
                 properties {
                   measurements(
-                    startOn: ${'$'}start,
-                    endOn: ${'$'}end,
+                    startOn: ${ '$' }start,
+                    endOn: ${ '$' }end,
                     timezone: "Europe/Berlin",
-                    first: 200,
+                    first: 400,
                     utilityFilters: [{electricityFilters: {readingDirection: CONSUMPTION, readingFrequencyType: FIFTEEN_MIN_INTERVAL}}]
                   ) {
-                    edges {
-                      node { value unit readAt }
-                    }
+                    edges { node { value unit readAt } }
                   }
                 }
               }
             }
         """.trimIndent()
-        val payload = JSONObject()
-            .put("query", query)
-            .put("variables", JSONObject().put("accountNumber", config.accountNumber).put("start", start).put("end", end))
-        val root = post(payload, token)
-        if (root.optJSONArray("errors")?.length() ?: 0 > 0) return null
-        val sums = linkedMapOf<String, Double>()
+        val variables = JSONObject()
+            .put("accountNumber", config.accountNumber)
+            .put("start", start)
+            .put("end", end)
+        val root = post(JSONObject().put("query", query).put("variables", variables), token)
+        throwGraphQlErrors(root)
+
+        data class Bucket(var total: Double = 0.0, var cheap: Double = 0.0, var normal: Double = 0.0, var cost: Double = 0.0)
+        val sums = linkedMapOf<String, Bucket>()
         val properties = root.optJSONObject("data")?.optJSONObject("account")?.optJSONArray("properties") ?: return null
         for (p in 0 until properties.length()) {
             val edges = properties.optJSONObject(p)?.optJSONObject("measurements")?.optJSONArray("edges") ?: continue
@@ -176,23 +128,36 @@ class OctopusApi(private val config: OctopusConfig) {
                 val node = edges.optJSONObject(i)?.optJSONObject("node") ?: continue
                 val readAt = node.optString("readAt")
                 val value = node.optDouble("value", Double.NaN)
-                if (readAt.isBlank() || !value.isFinite()) continue
+                if (readAt.isBlank() || !value.isFinite() || value < 0) continue
                 val unit = node.optString("unit").lowercase()
                 val kwh = if (unit.contains("wh") && !unit.contains("kwh")) value / 1000.0 else value
-                val date = runCatching { Instant.parse(readAt).atZone(berlin).toLocalDate().toString() }
-                    .getOrElse { readAt.take(10) }
-                sums[date] = (sums[date] ?: 0.0) + kwh
+                val zdt = parseReadAt(readAt)
+                val date = zdt?.toLocalDate()?.toString() ?: readAt.take(10)
+                val time = zdt?.toLocalTime() ?: LocalTime.NOON
+                val cheap = isCheap(time)
+                val bucket = sums.getOrPut(date) { Bucket() }
+                bucket.total += kwh
+                if (cheap) bucket.cheap += kwh else bucket.normal += kwh
+                bucket.cost += kwh * (if (cheap) config.cheapPriceCents else config.normalPriceCents) / 100.0
             }
         }
-        val chosen = sums.entries.filter { it.value > 0 }.maxByOrNull { it.key } ?: return null
-        return chosen.value to chosen.key
+        val preferred = sums.entries
+            .filter { it.value.total > 0.0 }
+            .sortedByDescending { it.key }
+            .firstOrNull { it.key <= today.toString() }
+            ?: return null
+        val b = preferred.value
+        return ImportResult(b.total, preferred.key, b.cheap, b.normal, b.cost)
     }
 
-    private fun fixedFallback(note: String?): OctopusData {
+    private fun parseReadAt(value: String): ZonedDateTime? = runCatching { Instant.parse(value).atZone(berlin) }
+        .recoverCatching { ZonedDateTime.parse(value).withZoneSameInstant(berlin) }
+        .getOrNull()
+
+    private fun localGoRates(): List<OctopusRate> {
         val rates = mutableListOf<OctopusRate>()
         var t = ZonedDateTime.now(berlin).withSecond(0).withNano(0)
-        val minute = (t.minute / 15) * 15
-        t = t.withMinute(minute)
+        t = t.withMinute((t.minute / 15) * 15)
         repeat(96) {
             val next = t.plusMinutes(15)
             rates += OctopusRate(
@@ -202,31 +167,16 @@ class OctopusApi(private val config: OctopusConfig) {
             )
             t = next
         }
-        return OctopusData(
-            rates = rates,
-            currentPriceCents = localGoPrice(LocalTime.now(berlin)),
-            source = "Octopus Go · lokaler Tarif",
-            note = note
-        )
+        return rates
     }
 
-    private fun localGoPrice(time: LocalTime): Double {
+    private fun isCheap(time: LocalTime): Boolean {
         val start = runCatching { LocalTime.parse(config.cheapStart) }.getOrDefault(LocalTime.MIDNIGHT)
         val end = runCatching { LocalTime.parse(config.cheapEnd) }.getOrDefault(LocalTime.of(5, 0))
-        val cheap = if (start <= end) time >= start && time < end else time >= start || time < end
-        return if (cheap) config.cheapPriceCents else config.normalPriceCents
+        return if (start <= end) time >= start && time < end else time >= start || time < end
     }
 
-    private fun findCurrentPrice(rates: List<OctopusRate>): Double? {
-        val now = Instant.now()
-        return rates.firstOrNull { rate ->
-            runCatching {
-                val from = ZonedDateTime.parse(rate.validFrom).toInstant()
-                val to = ZonedDateTime.parse(rate.validTo).toInstant()
-                !now.isBefore(from) && now.isBefore(to)
-            }.getOrDefault(false)
-        }?.grossCentsPerKwh ?: rates.firstOrNull()?.grossCentsPerKwh
-    }
+    private fun localGoPrice(time: LocalTime): Double = if (isCheap(time)) config.cheapPriceCents else config.normalPriceCents
 
     private fun post(payload: JSONObject, token: String?): JSONObject {
         val connection = URL(endpoint).openConnection() as HttpURLConnection
@@ -237,23 +187,21 @@ class OctopusApi(private val config: OctopusConfig) {
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "PVCompact/0.3 Android")
+            connection.setRequestProperty("User-Agent", "PVCompact/1.0 Android")
             if (!token.isNullOrBlank()) connection.setRequestProperty("Authorization", token)
             OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val body = BufferedReader(InputStreamReader(stream)).use { it.readText() }
-            if (code !in 200..299) throw IllegalStateException("HTTP $code: ${body.take(150)}")
+            if (code !in 200..299) throw IllegalStateException("HTTP $code: ${body.take(180)}")
             return JSONObject(body)
-        } finally {
-            connection.disconnect()
-        }
+        } finally { connection.disconnect() }
     }
 
     private fun throwGraphQlErrors(root: JSONObject) {
-        val errors = root.optJSONArray("errors") ?: return
+        val errors = root.optJSONArray("errors") ?: JSONArray()
         if (errors.length() == 0) return
-        val message = errors.optJSONObject(0)?.optString("message") ?: "GraphQL-Fehler"
+        val message = errors.optJSONObject(0)?.optString("message")?.takeIf { it.isNotBlank() } ?: "GraphQL-Fehler"
         throw IllegalStateException(message)
     }
 }
