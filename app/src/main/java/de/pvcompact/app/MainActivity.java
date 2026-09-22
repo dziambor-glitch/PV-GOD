@@ -405,16 +405,30 @@ public final class MainActivity extends Activity {
 
         content.addView(UiKit.sectionTitle(this, "Heute"));
         LinearLayout chartCard = UiKit.card(this);
-        TextView chartTitle = UiKit.text(this, "Leistung über den Tag", 16, UiKit.INK);
-        chartTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        chartCard.addView(chartTitle);
-        TextView chartSub = UiKit.caption(this, "PV-Leistung in Watt");
-        chartSub.setPadding(0, dp(2), 0, dp(8));
-        chartCard.addView(chartSub);
 
         LineChartView chart = new LineChartView(this);
         chart.setPoints(pv.history);
-        chartCard.addView(chart, new LinearLayout.LayoutParams(-1, dp(230)));
+        ForecastClient.Day todayForecast = todayForecastDay();
+        if (todayForecast != null) {
+            chart.setDaylightRange(todayForecast.sunrise, todayForecast.sunset);
+        }
+
+        LinearLayout chartHead = UiKit.row(this);
+        TextView chartTitle = UiKit.text(this, "PV-Leistung heute", 16, UiKit.INK);
+        chartTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        chartHead.addView(chartTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+        chartHead.addView(UiKit.pill(this,
+                chart.daylightLabel(),
+                UiKit.GREEN_DARK,
+                UiKit.MINT));
+        chartCard.addView(chartHead);
+
+        TextView chartSub = UiKit.caption(this,
+                "Nur das Solarfenster · Nachtstunden sind ausgeblendet · Skala in kW");
+        chartSub.setPadding(0, dp(4), 0, dp(8));
+        chartCard.addView(chartSub);
+
+        chartCard.addView(chart, new LinearLayout.LayoutParams(-1, dp(270)));
         content.addView(chartCard);
 
         content.addView(UiKit.sectionTitle(this, "Letzte 7 Tage"));
@@ -1580,6 +1594,14 @@ public final class MainActivity extends Activity {
         if (code >= 71 && code <= 77) return "❄";
         if (code >= 95) return "⚡";
         return "☁";
+    }
+
+    private ForecastClient.Day todayForecastDay() {
+        String today = LocalDate.now(BERLIN).toString();
+        for (ForecastClient.Day d : forecast) {
+            if (d != null && today.equals(d.date)) return d;
+        }
+        return forecast.isEmpty() ? null : forecast.get(0);
     }
 
     private String friendlyDate(String iso) {
