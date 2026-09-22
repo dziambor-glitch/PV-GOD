@@ -21,6 +21,8 @@ jobs:
 
       - name: Android SDK einrichten
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Projekt aus ZIP entpacken und v1.0 anwenden
         shell: bash
