@@ -14,8 +14,8 @@ android {
         applicationId = "de.pvcompact.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 10
+        versionName = "1.0.0"
     }
 
     buildTypes {
@@ -29,13 +29,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true; buildConfig = true }
 }
 
 dependencies {
