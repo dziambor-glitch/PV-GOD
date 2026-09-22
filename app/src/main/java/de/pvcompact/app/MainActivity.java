@@ -796,9 +796,38 @@ public final class MainActivity extends Activity {
         EditText pvKey = addField(pvCard, "API-Key", prefs.getSecret("pv_key"), true);
         content.addView(pvCard);
 
-        LinearLayout forecastCard = settingsCard("PV-Forecast", "Standort und Dachparameter");
-        EditText lat = addField(forecastCard, "Breitengrad", prefs.get("lat", ""), false);
-        EditText lon = addField(forecastCard, "Längengrad", prefs.get("lon", ""), false);
+        LinearLayout forecastCard = settingsCard("PV-Forecast", "Adresse statt Koordinaten eingeben");
+        TextView addressHelp = UiKit.caption(this,
+                "Gib einfach Straße, Hausnummer, PLZ und Ort ein. Die App ermittelt daraus automatisch Breiten- und Längengrad für die PV-Prognose.");
+        addressHelp.setPadding(0, 0, 0, dp(9));
+        forecastCard.addView(addressHelp);
+
+        EditText forecastStreet = addField(forecastCard, "Straße + Hausnummer", prefs.get("forecast_street", ""), false);
+        EditText forecastPostcode = addField(forecastCard, "PLZ", prefs.get("forecast_postcode", ""), false);
+        EditText forecastCity = addField(forecastCard, "Ort", prefs.get("forecast_city", ""), false);
+
+        Button locate = UiKit.secondaryButton(this, "Adresse finden");
+        LinearLayout.LayoutParams locateLp = new LinearLayout.LayoutParams(-1, dp(48));
+        locateLp.setMargins(0, 0, 0, dp(10));
+        forecastCard.addView(locate, locateLp);
+
+        EditText lat = addField(forecastCard, "Breitengrad · automatisch", prefs.get("lat", ""), false);
+        EditText lon = addField(forecastCard, "Längengrad · automatisch", prefs.get("lon", ""), false);
+        lat.setFocusable(false);
+        lat.setClickable(false);
+        lon.setFocusable(false);
+        lon.setClickable(false);
+
+        TextView addressResolved = UiKit.caption(this,
+                prefs.get("forecast_resolved", "").isEmpty()
+                        ? "Noch keine Adresse aufgelöst."
+                        : "Gefunden: " + prefs.get("forecast_resolved", ""));
+        addressResolved.setPadding(dp(3), 0, dp(3), dp(10));
+        forecastCard.addView(addressResolved);
+
+        locate.setOnClickListener(v -> geocodeForecastAddress(
+                forecastStreet, forecastPostcode, forecastCity, lat, lon, addressResolved));
+
         EditText kwp = addField(forecastCard, "Anlagengröße kWp", prefs.get("kwp", ""), false);
         EditText tilt = addField(forecastCard, "Dachneigung °", prefs.get("tilt", "30"), false);
         EditText az = addField(forecastCard, "Azimut · Ost −90 / Süd 0 / West +90", prefs.get("azimuth", "0"), false);
@@ -853,6 +882,9 @@ public final class MainActivity extends Activity {
             prefs.put("pv_system", pvSystem.getText().toString());
             prefs.putSecret("pv_key", pvKey.getText().toString());
 
+            prefs.put("forecast_street", forecastStreet.getText().toString());
+            prefs.put("forecast_postcode", forecastPostcode.getText().toString());
+            prefs.put("forecast_city", forecastCity.getText().toString());
             prefs.put("lat", lat.getText().toString());
             prefs.put("lon", lon.getText().toString());
             prefs.put("kwp", kwp.getText().toString());
@@ -933,6 +965,47 @@ public final class MainActivity extends Activity {
         b.setOnClickListener(listener);
         card.addView(b, new LinearLayout.LayoutParams(-1, dp(48)));
         content.addView(card);
+    }
+
+    private void geocodeForecastAddress(EditText street, EditText postcode, EditText city,
+                                        EditText lat, EditText lon, TextView resolved) {
+        String streetValue = street.getText().toString().trim();
+        String postcodeValue = postcode.getText().toString().trim();
+        String cityValue = city.getText().toString().trim();
+
+        if (streetValue.isEmpty() || cityValue.isEmpty()) {
+            Toast.makeText(this, "Bitte mindestens Straße + Hausnummer und Ort eingeben.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        resolved.setText("Adresse wird gesucht …");
+        io.execute(() -> {
+            try {
+                GeocodingClient.Result result = new GeocodingClient().geocode(
+                        streetValue, postcodeValue, cityValue, "Deutschland");
+                String latValue = String.format(Locale.US, "%.6f", result.lat);
+                String lonValue = String.format(Locale.US, "%.6f", result.lon);
+                prefs.put("forecast_street", streetValue);
+                prefs.put("forecast_postcode", postcodeValue);
+                prefs.put("forecast_city", cityValue);
+                prefs.put("forecast_resolved", result.displayName);
+                prefs.put("lat", latValue);
+                prefs.put("lon", lonValue);
+
+                runOnUiThread(() -> {
+                    lat.setText(latValue);
+                    lon.setText(lonValue);
+                    resolved.setText("Gefunden: " + result.displayName);
+                    Toast.makeText(this, "Adresse gefunden.", Toast.LENGTH_SHORT).show();
+                });
+            } catch (Exception e) {
+                String err = cleanError(e);
+                runOnUiThread(() -> {
+                    resolved.setText("Adresse konnte nicht gefunden werden.");
+                    Toast.makeText(this, err, Toast.LENGTH_LONG).show();
+                });
+            }
+        });
     }
 
     private void refreshAll() {
