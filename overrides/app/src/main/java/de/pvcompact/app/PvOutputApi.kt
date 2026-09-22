@@ -18,16 +18,6 @@ class PvOutputApi(
 
     data class ApiResponse(val body: String, val rateRemaining: Int?)
 
-    /**
-     * Rate-friendly dashboard load:
-     * - Live: max. every 2 minutes unless forceLive=true
-     * - Day curve: max. every 15 minutes
-     * - 7 days: max. every 6 hours
-     * - Years: max. every 24 hours
-     *
-     * On the first run the cache is empty, so up to four calls are needed once.
-     * Normal app opens afterwards are typically zero or one PVOutput call.
-     */
     fun loadDashboard(forceLive: Boolean = false): DashboardData {
         val liveResponse = cachedGet("getstatus.jsp", if (forceLive) 0L else TWO_MINUTES)
         val live = parseLive(liveResponse.body)
@@ -51,9 +41,7 @@ class PvOutputApi(
                 consumedWh = listOfNotNull(old.consumedWh, live.consumptionWh).maxOrNull(),
                 peakPowerW = listOfNotNull(old.peakPowerW, live.powerW).maxOrNull()
             )
-        } else {
-            week.add(todayOutput)
-        }
+        } else week.add(todayOutput)
 
         return DashboardData(
             live = live,
@@ -69,13 +57,11 @@ class PvOutputApi(
         )
     }
 
-    /** Widget use: never call more than once per 30 minutes. */
     fun loadLiveForWidget(): Pair<LiveStatus, Int?> {
         val response = cachedGet("getstatus.jsp", THIRTY_MINUTES)
         return parseLive(response.body) to response.rateRemaining
     }
 
-    /** Explicit refresh from the app. */
     fun loadLive(force: Boolean = false): Pair<LiveStatus, Int?> {
         val response = cachedGet("getstatus.jsp", if (force) 0L else TWO_MINUTES)
         return parseLive(response.body) to response.rateRemaining
@@ -91,14 +77,14 @@ class PvOutputApi(
                 return ApiResponse(body, remaining)
             }
         }
-
         val response = get(path)
-        cache?.edit()?.apply {
+        cache?.edit()?.also { editor ->
             val key = cacheKey(path)
-            putLong("${key}_time", System.currentTimeMillis())
-            putString("${key}_body", response.body)
-            response.rateRemaining?.let { putInt("${key}_remaining", it) }
-        }?.apply()
+            editor.putLong("${key}_time", System.currentTimeMillis())
+            editor.putString("${key}_body", response.body)
+            response.rateRemaining?.let { editor.putInt("${key}_remaining", it) }
+            editor.apply()
+        }
         return response
     }
 
@@ -113,85 +99,52 @@ class PvOutputApi(
             connection.setRequestProperty("X-Pvoutput-Apikey", apiKey)
             connection.setRequestProperty("X-Pvoutput-SystemId", systemId)
             connection.setRequestProperty("X-Rate-Limit", "1")
-            connection.setRequestProperty("User-Agent", "PVCompact/0.3 Android")
-
+            connection.setRequestProperty("User-Agent", "PVCompact/1.0 Android")
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val body = BufferedReader(InputStreamReader(stream)).use { it.readText() }.trim()
-            if (code !in 200..299) {
-                throw IllegalStateException("PVOutput Fehler $code: ${body.take(180)}")
-            }
+            if (code !in 200..299) throw IllegalStateException("PVOutput Fehler $code: ${body.take(180)}")
             return ApiResponse(body, connection.getHeaderField("X-Rate-Limit-Remaining")?.toIntOrNull())
-        } finally {
-            connection.disconnect()
-        }
+        } finally { connection.disconnect() }
     }
 
     private fun parseLive(body: String): LiveStatus {
         val p = body.split(',')
         require(p.size >= 6) { "Unerwartete Live-Antwort von PVOutput" }
         return LiveStatus(
-            date = p[0],
-            time = p[1],
-            energyWh = num(p[2]) ?: 0.0,
-            powerW = num(p[3]) ?: 0.0,
-            consumptionWh = p.getOrNull(4)?.let(::num),
-            consumptionW = p.getOrNull(5)?.let(::num),
-            temperatureC = p.getOrNull(7)?.let(::num),
-            voltageV = p.getOrNull(8)?.let(::num)
+            date = p[0], time = p[1], energyWh = num(p[2]) ?: 0.0, powerW = num(p[3]) ?: 0.0,
+            consumptionWh = p.getOrNull(4)?.let(::num), consumptionW = p.getOrNull(5)?.let(::num),
+            temperatureC = p.getOrNull(7)?.let(::num), voltageV = p.getOrNull(8)?.let(::num)
         )
     }
 
-    private fun parseHistory(body: String): List<HistoryPoint> = body
-        .split(';')
-        .mapNotNull { row ->
-            val p = row.trim().split(',')
-            if (p.size < 6) return@mapNotNull null
-            HistoryPoint(
-                time = p[1],
-                energyWh = num(p[2]) ?: 0.0,
-                powerW = num(p[4]) ?: 0.0,
-                consumptionW = p.getOrNull(8)?.let(::num)
-            )
-        }
+    private fun parseHistory(body: String): List<HistoryPoint> = body.split(';').mapNotNull { row ->
+        val p = row.trim().split(',')
+        if (p.size < 6) return@mapNotNull null
+        HistoryPoint(time = p[1], energyWh = num(p[2]) ?: 0.0, powerW = num(p[4]) ?: 0.0, consumptionW = p.getOrNull(8)?.let(::num))
+    }
 
-    private fun parseWeek(body: String): List<DailyOutput> = body
-        .split(';')
-        .mapNotNull { row ->
-            val p = row.trim().split(',')
-            if (p.size < 2 || p[0].isBlank()) return@mapNotNull null
-            DailyOutput(
-                date = p[0],
-                generatedWh = num(p[1]) ?: 0.0,
-                efficiency = p.getOrNull(2)?.let(::num),
-                consumedWh = p.getOrNull(4)?.let(::num),
-                peakPowerW = p.getOrNull(5)?.let(::num)
-            )
-        }
+    private fun parseWeek(body: String): List<DailyOutput> = body.split(';').mapNotNull { row ->
+        val p = row.trim().split(',')
+        if (p.size < 2 || p[0].isBlank()) return@mapNotNull null
+        DailyOutput(p[0], num(p[1]) ?: 0.0, p.getOrNull(2)?.let(::num), p.getOrNull(4)?.let(::num), p.getOrNull(5)?.let(::num))
+    }
 
-    private fun parseYears(body: String): List<AnnualOutput> = body
-        .split(';')
-        .mapNotNull { row ->
-            val p = row.trim().split(',')
-            if (p.size < 6 || p[0].length < 4) return@mapNotNull null
-            val year = p[0].take(4).toIntOrNull() ?: return@mapNotNull null
-            val imports = listOfNotNull(
-                p.getOrNull(6)?.let(::num),
-                p.getOrNull(7)?.let(::num),
-                p.getOrNull(8)?.let(::num),
-                p.getOrNull(9)?.let(::num)
-            )
-            AnnualOutput(
-                year = year,
-                days = p.getOrNull(1)?.toIntOrNull() ?: 0,
-                generatedWh = p.getOrNull(2)?.let(::num) ?: 0.0,
-                efficiency = p.getOrNull(3)?.let(::num),
-                exportedWh = p.getOrNull(4)?.let(::num),
-                consumedWh = p.getOrNull(5)?.let(::num),
-                importedWh = if (imports.isEmpty()) null else imports.sum()
-            )
-        }
-        .sortedByDescending { it.year }
+    private fun parseYears(body: String): List<AnnualOutput> = body.split(';').mapNotNull { row ->
+        val p = row.trim().split(',')
+        if (p.size < 6 || p[0].length < 4) return@mapNotNull null
+        val year = p[0].take(4).toIntOrNull() ?: return@mapNotNull null
+        val imports = listOfNotNull(p.getOrNull(6)?.let(::num), p.getOrNull(7)?.let(::num), p.getOrNull(8)?.let(::num), p.getOrNull(9)?.let(::num))
+        AnnualOutput(
+            year = year,
+            days = p.getOrNull(1)?.toIntOrNull() ?: 0,
+            generatedWh = p.getOrNull(2)?.let(::num) ?: 0.0,
+            efficiency = p.getOrNull(3)?.let(::num),
+            exportedWh = p.getOrNull(4)?.let(::num),
+            consumedWh = p.getOrNull(5)?.let(::num),
+            importedWh = if (imports.isEmpty()) null else imports.sum()
+        )
+    }.sortedByDescending { it.year }
 
     private fun num(value: String): Double? = value.trim().takeIf { it.isNotEmpty() && !it.equals("NaN", true) }?.toDoubleOrNull()
 
