@@ -10,49 +10,41 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class CredentialStore(private val context: Context) {
-    private val prefs = context.getSharedPreferences("pvcompact_secure", Context.MODE_PRIVATE)
-    private val forecastPrefs = context.getSharedPreferences("pvcompact_forecast", Context.MODE_PRIVATE)
-    private val octopusPrefs = context.getSharedPreferences("pvcompact_octopus", Context.MODE_PRIVATE)
+class CredentialStore(context: Context) {
+    private val appContext = context.applicationContext
+    private val pvPrefs = appContext.getSharedPreferences("pvcompact_secure", Context.MODE_PRIVATE)
+    private val forecastPrefs = appContext.getSharedPreferences("pvcompact_forecast", Context.MODE_PRIVATE)
+    private val octopusPrefs = appContext.getSharedPreferences("pvcompact_octopus", Context.MODE_PRIVATE)
+    private val controllerPrefs = appContext.getSharedPreferences("pvcompact_controller", Context.MODE_PRIVATE)
     private val alias = "pvcompact_api_key"
 
     fun hasCredentials(): Boolean = getSystemId().isNotBlank() && getApiKey().isNotBlank()
-
-    fun getSystemId(): String = prefs.getString("system_id", "") ?: ""
+    fun getSystemId(): String = pvPrefs.getString("system_id", "") ?: ""
 
     fun save(systemId: String, apiKey: String) {
         val encrypted = encrypt(apiKey.trim())
-        prefs.edit()
+        pvPrefs.edit()
             .putString("system_id", systemId.trim())
             .putString("api_iv", encrypted.first)
             .putString("api_data", encrypted.second)
             .commit()
     }
 
-    fun getApiKey(): String = decrypt(
-        prefs.getString("api_iv", null),
-        prefs.getString("api_data", null)
-    )
-
-    fun clearCredentials() {
-        prefs.edit().clear().commit()
-    }
+    fun getApiKey(): String = decrypt(pvPrefs.getString("api_iv", null), pvPrefs.getString("api_data", null))
+    fun clearPvOutput() { pvPrefs.edit().clear().commit() }
 
     fun saveForecastConfig(config: ForecastConfig) {
-        val keyPair = if (config.forecastSolarApiKey.isBlank()) null else encrypt(config.forecastSolarApiKey.trim())
-        val editor = forecastPrefs.edit()
+        val fsKey = config.forecastSolarApiKey.trim().takeIf { it.isNotBlank() }?.let(::encrypt)
+        val e = forecastPrefs.edit()
             .putString("lat", config.latitude.toString())
             .putString("lon", config.longitude.toString())
             .putInt("tilt", config.tilt)
             .putInt("azimuth", config.azimuth)
             .putString("kwp", config.kwp.toString())
             .putString("pr", config.performanceRatio.toString())
-        if (keyPair == null) {
-            editor.remove("fs_iv").remove("fs_data")
-        } else {
-            editor.putString("fs_iv", keyPair.first).putString("fs_data", keyPair.second)
-        }
-        editor.commit()
+        if (fsKey == null) e.remove("fs_iv").remove("fs_data")
+        else e.putString("fs_iv", fsKey.first).putString("fs_data", fsKey.second)
+        e.commit()
     }
 
     fun getForecastConfig(): ForecastConfig? {
@@ -66,102 +58,103 @@ class CredentialStore(private val context: Context) {
             azimuth = forecastPrefs.getInt("azimuth", 0),
             kwp = kwp,
             performanceRatio = forecastPrefs.getString("pr", "0.85")?.toDoubleOrNull() ?: 0.85,
-            forecastSolarApiKey = decrypt(
-                forecastPrefs.getString("fs_iv", null),
-                forecastPrefs.getString("fs_data", null)
-            )
+            forecastSolarApiKey = decrypt(forecastPrefs.getString("fs_iv", null), forecastPrefs.getString("fs_data", null))
         )
     }
 
-    fun clearForecastConfig() {
-        forecastPrefs.edit().clear().commit()
-    }
+    fun clearForecastConfig() { forecastPrefs.edit().clear().commit() }
 
     fun saveOctopusConfig(config: OctopusConfig) {
         val api = config.apiKey.trim().takeIf { it.isNotBlank() }?.let(::encrypt)
         val refresh = config.refreshToken.trim().takeIf { it.isNotBlank() }?.let(::encrypt)
-        val editor = octopusPrefs.edit()
+        val e = octopusPrefs.edit()
             .putString("account", config.accountNumber.trim())
-            .putString("cheap_start", config.cheapStart)
-            .putString("cheap_end", config.cheapEnd)
+            .putString("cheap_start", config.cheapStart.trim())
+            .putString("cheap_end", config.cheapEnd.trim())
             .putString("cheap_price", config.cheapPriceCents.toString())
             .putString("normal_price", config.normalPriceCents.toString())
-        if (api == null) editor.remove("api_iv").remove("api_data")
-        else editor.putString("api_iv", api.first).putString("api_data", api.second)
-        if (refresh == null) editor.remove("refresh_iv").remove("refresh_data")
-        else editor.putString("refresh_iv", refresh.first).putString("refresh_data", refresh.second)
-        editor.commit()
+        if (api == null) e.remove("api_iv").remove("api_data")
+        else e.putString("api_iv", api.first).putString("api_data", api.second)
+        if (refresh == null) e.remove("refresh_iv").remove("refresh_data")
+        else e.putString("refresh_iv", refresh.first).putString("refresh_data", refresh.second)
+        e.commit()
     }
 
     fun updateOctopusRefreshToken(token: String) {
         if (token.isBlank()) return
-        val encrypted = encrypt(token)
+        val encrypted = encrypt(token.trim())
         octopusPrefs.edit()
             .putString("refresh_iv", encrypted.first)
             .putString("refresh_data", encrypted.second)
             .commit()
     }
 
-    fun getOctopusConfig(): OctopusConfig {
-        return OctopusConfig(
-            accountNumber = octopusPrefs.getString("account", "") ?: "",
-            apiKey = decrypt(octopusPrefs.getString("api_iv", null), octopusPrefs.getString("api_data", null)),
-            refreshToken = decrypt(octopusPrefs.getString("refresh_iv", null), octopusPrefs.getString("refresh_data", null)),
-            cheapStart = octopusPrefs.getString("cheap_start", "00:00") ?: "00:00",
-            cheapEnd = octopusPrefs.getString("cheap_end", "05:00") ?: "05:00",
-            cheapPriceCents = octopusPrefs.getString("cheap_price", "19.0")?.toDoubleOrNull() ?: 19.0,
-            normalPriceCents = octopusPrefs.getString("normal_price", "29.0")?.toDoubleOrNull() ?: 29.0
-        )
+    fun getOctopusConfig(): OctopusConfig = OctopusConfig(
+        accountNumber = octopusPrefs.getString("account", "") ?: "",
+        apiKey = decrypt(octopusPrefs.getString("api_iv", null), octopusPrefs.getString("api_data", null)),
+        refreshToken = decrypt(octopusPrefs.getString("refresh_iv", null), octopusPrefs.getString("refresh_data", null)),
+        cheapStart = octopusPrefs.getString("cheap_start", "00:00") ?: "00:00",
+        cheapEnd = octopusPrefs.getString("cheap_end", "05:00") ?: "05:00",
+        cheapPriceCents = octopusPrefs.getString("cheap_price", "19.0")?.toDoubleOrNull() ?: 19.0,
+        normalPriceCents = octopusPrefs.getString("normal_price", "29.0")?.toDoubleOrNull() ?: 29.0
+    )
+
+    fun clearOctopusConfig() { octopusPrefs.edit().clear().commit() }
+
+    fun saveControllerConfig(config: ControllerConfig) {
+        val token = config.accessToken.trim().takeIf { it.isNotBlank() }?.let(::encrypt)
+        val e = controllerPrefs.edit().putString("base_url", config.baseUrl.trim().trimEnd('/'))
+        if (token == null) e.remove("token_iv").remove("token_data")
+        else e.putString("token_iv", token.first).putString("token_data", token.second)
+        e.commit()
     }
 
-    fun clearOctopusConfig() {
-        octopusPrefs.edit().clear().commit()
-    }
+    fun getControllerConfig(): ControllerConfig = ControllerConfig(
+        baseUrl = controllerPrefs.getString("base_url", "") ?: "",
+        accessToken = decrypt(controllerPrefs.getString("token_iv", null), controllerPrefs.getString("token_data", null))
+    )
+
+    fun clearControllerConfig() { controllerPrefs.edit().clear().commit() }
 
     fun clearAll() {
-        prefs.edit().clear().commit()
+        pvPrefs.edit().clear().commit()
         forecastPrefs.edit().clear().commit()
         octopusPrefs.edit().clear().commit()
+        controllerPrefs.edit().clear().commit()
     }
 
     private fun encrypt(value: String): Pair<String, String> {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) to
-            Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) to Base64.encodeToString(encrypted, Base64.NO_WRAP)
     }
 
-    private fun decrypt(ivText: String?, dataText: String?): String {
-        return try {
-            val iv = ivText ?: return ""
-            val data = dataText ?: return ""
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                getOrCreateKey(),
-                GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP))
-            )
-            String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), Charsets.UTF_8)
-        } catch (_: Exception) {
-            ""
-        }
+    private fun decrypt(ivText: String?, dataText: String?): String = try {
+        val iv = ivText ?: return ""
+        val data = dataText ?: return ""
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            getOrCreateKey(),
+            GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP))
+        )
+        String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), Charsets.UTF_8)
+    } catch (_: Exception) {
+        ""
     }
 
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val existing = keyStore.getKey(alias, null) as? SecretKey
         if (existing != null) return existing
-
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        val spec = KeyGenParameterSpec.Builder(
-            alias,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        generator.init(
+            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build()
         )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .build()
-        generator.init(spec)
         return generator.generateKey()
     }
 }
