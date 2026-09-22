@@ -4,7 +4,8 @@
 
     <application
         android:allowBackup="true"
-        android:label="PV Compact Clean"
+        android:icon="@drawable/ic_pv_compact"
+        android:label="PV Compact"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
 
