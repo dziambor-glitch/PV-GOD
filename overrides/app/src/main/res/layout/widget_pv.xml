@@ -6,12 +6,12 @@
     android:orientation="vertical"
     android:gravity="center_vertical"
     android:background="@drawable/widget_bg"
-    android:padding="16dp">
+    android:padding="15dp">
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="PV Compact"
+        android:text="PV Compact 1.0"
         android:textStyle="bold"
         android:textSize="14sp"
         android:textColor="#0B513A" />
@@ -20,43 +20,21 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginTop="8dp">
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Heute" android:textSize="12sp" android:textColor="#51645A"/>
-            <TextView android:id="@+id/widget_energy" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="– kWh" android:textStyle="bold" android:textSize="23sp" android:textColor="#10261C"/>
+        android:layout_marginTop="7dp">
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Heute" android:textSize="11sp" android:textColor="#51645A"/>
+            <TextView android:id="@+id/widget_energy" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="– kWh" android:textStyle="bold" android:textSize="21sp" android:textColor="#10261C"/>
         </LinearLayout>
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Aktuell" android:textSize="12sp" android:textColor="#51645A"/>
-            <TextView android:id="@+id/widget_power" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="– kW" android:textStyle="bold" android:textSize="23sp" android:textColor="#10261C"/>
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Aktuell" android:textSize="11sp" android:textColor="#51645A"/>
+            <TextView android:id="@+id/widget_power" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="– kW" android:textStyle="bold" android:textSize="21sp" android:textColor="#10261C"/>
         </LinearLayout>
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/widget_forecast"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:text="Forecast in der App einrichten"
-        android:textStyle="bold"
-        android:textSize="12sp"
-        android:textColor="#0B513A" />
-
-    <TextView
-        android:id="@+id/widget_price"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="3dp"
-        android:text="Octopus-Tarif in der App einrichten"
-        android:textSize="11sp"
-        android:textColor="#0B513A" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="5dp">
+        <TextView android:id="@+id/widget_forecast" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Forecast –" android:textStyle="bold" android:textSize="11sp" android:textColor="#0B513A" />
+        <TextView android:id="@+id/widget_price" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Octopus –" android:textStyle="bold" android:textSize="11sp" android:textColor="#0B513A" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/widget_updated"
@@ -64,6 +42,6 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="3dp"
         android:text="Noch keine Daten"
-        android:textSize="11sp"
+        android:textSize="10sp"
         android:textColor="#66786F" />
 </LinearLayout>
