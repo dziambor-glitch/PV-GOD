@@ -11,14 +11,13 @@ import java.util.Locale
 class PvWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
         appWidgetIds.forEach { updateFromCache(context, manager, it) }
-
         val pending = goAsync()
         Thread {
             try {
                 val store = CredentialStore(context)
                 if (store.hasCredentials()) {
                     val (live, _) = PvOutputApi(store.getApiKey(), store.getSystemId(), context).loadLiveForWidget()
-                    val forecast = store.getForecastConfig()?.let { config -> runCatching { PvForecastApi(config).load() }.getOrNull() }
+                    val forecast = store.getForecastConfig()?.let { runCatching { PvForecastApi(it).load() }.getOrNull() }
                     val octopus = runCatching { OctopusApi(store.getOctopusConfig()).load() }.getOrNull()
                     octopus?.refreshedToken?.let(store::updateOctopusRefreshToken)
                     WidgetCache.save(context, live, forecast, octopus?.currentPriceCents)
@@ -26,43 +25,23 @@ class PvWidgetProvider : AppWidgetProvider() {
                     appWidgetIds.forEach { update(context, manager, it, live.energyWh, live.powerW, live.time, tomorrowWh, octopus?.currentPriceCents) }
                 }
             } catch (_: Exception) {
-                // Cache bleibt sichtbar.
-            } finally {
-                pending.finish()
-            }
+                // Letzten Cache sichtbar lassen.
+            } finally { pending.finish() }
         }.start()
     }
 
     private fun updateFromCache(context: Context, manager: AppWidgetManager, id: Int) {
         val cache = WidgetCache.load(context)
-        if (cache == null) {
-            manager.updateAppWidget(id, baseViews(context))
-        } else {
-            update(context, manager, id, cache.energyWh, cache.powerW, cache.time, cache.tomorrowWh, cache.octopusPriceCents)
-        }
+        if (cache == null) manager.updateAppWidget(id, baseViews(context))
+        else update(context, manager, id, cache.energyWh, cache.powerW, cache.time, cache.tomorrowWh, cache.octopusPriceCents)
     }
 
-    private fun update(
-        context: Context,
-        manager: AppWidgetManager,
-        id: Int,
-        energyWh: Double,
-        powerW: Double,
-        time: String,
-        tomorrowWh: Double?,
-        octopusPriceCents: Double?
-    ) {
+    private fun update(context: Context, manager: AppWidgetManager, id: Int, energyWh: Double, powerW: Double, time: String, tomorrowWh: Double?, price: Double?) {
         val views = baseViews(context)
         views.setTextViewText(R.id.widget_energy, String.format(Locale.GERMANY, "%.1f kWh", energyWh / 1000.0))
         views.setTextViewText(R.id.widget_power, String.format(Locale.GERMANY, "%.2f kW", powerW / 1000.0))
-        views.setTextViewText(
-            R.id.widget_forecast,
-            tomorrowWh?.let { String.format(Locale.GERMANY, "Morgen ca. %.1f kWh", it / 1000.0) } ?: "Forecast in der App einrichten"
-        )
-        views.setTextViewText(
-            R.id.widget_price,
-            octopusPriceCents?.let { String.format(Locale.GERMANY, "Octopus %.1f ct/kWh", it) } ?: "Octopus-Tarif in der App einrichten"
-        )
+        views.setTextViewText(R.id.widget_forecast, tomorrowWh?.let { String.format(Locale.GERMANY, "Morgen %.1f kWh", it / 1000.0) } ?: "Forecast –")
+        views.setTextViewText(R.id.widget_price, price?.let { String.format(Locale.GERMANY, "Octopus %.1f ct/kWh", it) } ?: "Octopus –")
         views.setTextViewText(R.id.widget_updated, "Stand $time Uhr")
         manager.updateAppWidget(id, views)
     }
