@@ -83,7 +83,29 @@ data class OctopusData(
     val note: String? = null,
     val netImportKwh: Double? = null,
     val netImportDate: String? = null,
+    val cheapImportKwh: Double? = null,
+    val normalImportKwh: Double? = null,
+    val estimatedCostEuro: Double? = null,
     val refreshedToken: String? = null
+)
+
+data class ControllerConfig(
+    val baseUrl: String = "",
+    val accessToken: String = ""
+)
+
+data class ControllerStatus(
+    val online: Boolean = false,
+    val updatedAt: String? = null,
+    val batterySoc: Double? = null,
+    val batteryPowerW: Double? = null,
+    val pvPowerW: Double? = null,
+    val loadPowerW: Double? = null,
+    val gridPowerW: Double? = null,
+    val chargeCurrentA: Double? = null,
+    val automationEnabled: Boolean? = null,
+    val mode: String? = null,
+    val note: String? = null
 )
 
 data class DashboardData(
