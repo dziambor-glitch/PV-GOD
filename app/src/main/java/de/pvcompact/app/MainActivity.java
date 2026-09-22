@@ -17,6 +17,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -242,7 +243,7 @@ public final class MainActivity extends Activity {
         LinearLayout row2 = UiKit.row(this);
         row2.setBaselineAligned(false);
         String tomorrow = forecast.size() > 1
-                ? String.format(Locale.GERMANY, "%.1f kWh", forecast.get(1).energyKwh)
+                ? String.format(Locale.GERMANY, "%.1f kWh", adjustedForecastKwh(forecast.get(1)))
                 : "—";
         row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
                 metricLp(true));
@@ -311,7 +312,7 @@ public final class MainActivity extends Activity {
 
         if (!forecast.isEmpty() && forecast.get(0).energyKwh > 0) {
             double actual = pv.live.energyWh / 1000.0;
-            double target = forecast.get(0).energyKwh;
+            double target = adjustedForecastKwh(forecast.get(0));
             int progress = (int)Math.round(Math.min(100, actual / target * 100.0));
 
             TextView progressLabel = UiKit.text(this,
@@ -494,12 +495,12 @@ public final class MainActivity extends Activity {
     }
 
     private void showForecast() {
-        pageHeader("PV-Prognose", "Wetterbasierte Solarprognose für die nächsten Tage");
+        pageHeader("PV-Prognose", "Wetterbasierte Solarprognose mit eigener Anlagenkorrektur");
 
         if (forecast.isEmpty()) {
             emptyState("Forecast noch nicht bereit",
                     forecastError.isEmpty()
-                            ? "Hinterlege Standort, kWp, Dachneigung und Azimut in den Einstellungen."
+                            ? "Hinterlege Standort, kWp, Dachneigung und Ausrichtung in den Einstellungen."
                             : forecastError,
                     "Forecast einrichten",
                     v -> showTab("Einstellungen"));
@@ -518,7 +519,7 @@ public final class MainActivity extends Activity {
         heroText.setOrientation(LinearLayout.VERTICAL);
         heroText.addView(UiKit.overline(this, "MORGEN", UiKit.AMBER));
         TextView amount = UiKit.text(this,
-                String.format(Locale.GERMANY, "%.1f kWh", tomorrow.energyKwh),
+                String.format(Locale.GERMANY, "%.1f kWh", adjustedForecastKwh(tomorrow)),
                 31, UiKit.INK);
         amount.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         amount.setPadding(0, dp(3), 0, dp(1));
@@ -531,10 +532,105 @@ public final class MainActivity extends Activity {
         hero.addView(heroTop);
         content.addView(hero);
 
+        content.addView(UiKit.sectionTitle(this, "Anlagen-Korrektur"));
+        LinearLayout correction = UiKit.card(this);
+
+        double manualFactor = manualForecastFactor();
+        ForecastCalibration.Stats calibrationStats = forecastCalibrationStats();
+        boolean autoLearning = prefs.getBool("forecast_auto_learning", true);
+        double autoFactor = autoLearning ? calibrationStats.autoFactor : 1.0;
+        double effectiveFactor = manualFactor * autoFactor;
+
+        LinearLayout correctionHead = UiKit.row(this);
+        LinearLayout correctionTitle = new LinearLayout(this);
+        correctionTitle.setOrientation(LinearLayout.VERTICAL);
+        TextView ch = UiKit.text(this, "Manuelle Korrektur", 16, UiKit.INK);
+        ch.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        correctionTitle.addView(ch);
+        correctionTitle.addView(UiKit.caption(this,
+                "Wenn die Prognose dauerhaft zu hoch ist, kannst du sie hier direkt an deine Anlage anpassen."));
+        correctionHead.addView(correctionTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView factorValue = UiKit.pill(this,
+                Math.round(manualFactor * 100) + " %",
+                UiKit.GREEN_DARK, UiKit.MINT);
+        correctionHead.addView(factorValue);
+        correction.addView(correctionHead);
+
+        SeekBar factorSlider = new SeekBar(this);
+        factorSlider.setMax(60); // 60 % bis 120 %
+        factorSlider.setProgress((int)Math.round(manualFactor * 100) - 60);
+        factorSlider.setProgressTintList(android.content.res.ColorStateList.valueOf(UiKit.GREEN));
+        factorSlider.setThumbTintList(android.content.res.ColorStateList.valueOf(UiKit.GREEN));
+        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(-1, dp(44));
+        sliderLp.setMargins(0, dp(10), 0, 0);
+        correction.addView(factorSlider, sliderLp);
+
+        LinearLayout scale = UiKit.row(this);
+        scale.addView(UiKit.text(this, "60 %", 11, UiKit.MUTED),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView hundred = UiKit.text(this, "100 %", 11, UiKit.MUTED);
+        hundred.setGravity(Gravity.CENTER);
+        scale.addView(hundred, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView maxText = UiKit.text(this, "120 %", 11, UiKit.MUTED);
+        maxText.setGravity(Gravity.RIGHT);
+        scale.addView(maxText, new LinearLayout.LayoutParams(0, -2, 1f));
+        correction.addView(scale);
+
+        TextView manualHint = UiKit.caption(this,
+                "Beispiel: 85 % bedeutet, dass PV Compact nur 85 % der ursprünglichen Open-Meteo-Prognose verwendet.");
+        manualHint.setPadding(0, dp(8), 0, dp(10));
+        correction.addView(manualHint);
+
+        CheckBox auto = new CheckBox(this);
+        auto.setText("Automatisch nachlernen");
+        auto.setTextColor(UiKit.INK);
+        auto.setChecked(autoLearning);
+        correction.addView(auto);
+
+        String learnText;
+        if (calibrationStats.samples == 0) {
+            learnText = "Noch keine abgeschlossenen Vergleichstage. PV Compact beginnt ab jetzt zu lernen.";
+        } else if (calibrationStats.samples < 3) {
+            learnText = "Lernphase: " + calibrationStats.samples
+                    + " von 3 Vergleichstagen. Automatische Korrektur derzeit "
+                    + Math.round(autoFactor * 100) + " %.";
+        } else {
+            learnText = "Aus " + calibrationStats.samples
+                    + " abgeschlossenen Tagen gelernt: Auto-Faktor "
+                    + Math.round(autoFactor * 100) + " %. Effektive Prognose "
+                    + Math.round(effectiveFactor * 100) + " %.";
+        }
+
+        TextView learning = UiKit.caption(this, learnText);
+        learning.setPadding(0, dp(4), 0, 0);
+        correction.addView(learning);
+        content.addView(correction);
+
+        factorSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int percent = 60 + progress;
+                factorValue.setText(percent + " %");
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                int percent = 60 + seekBar.getProgress();
+                prefs.put("forecast_manual_factor", String.format(Locale.US, "%.2f", percent / 100.0));
+                showTab("Forecast");
+            }
+        });
+
+        auto.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.putBool("forecast_auto_learning", isChecked);
+            showTab("Forecast");
+        });
+
         content.addView(UiKit.sectionTitle(this, "4-Tage-Ausblick"));
         LinearLayout list = UiKit.card(this);
         double max = 1;
-        for (ForecastClient.Day d : forecast) max = Math.max(max, d.energyKwh);
+        for (ForecastClient.Day d : forecast) max = Math.max(max, adjustedForecastKwh(d));
         int count = Math.min(4, forecast.size());
         for (int i = 0; i < count; i++) {
             ForecastClient.Day d = forecast.get(i);
@@ -557,15 +653,16 @@ public final class MainActivity extends Activity {
             labels.addView(UiKit.text(this, temps, 12, UiKit.MUTED));
             row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
 
+            double adjusted = adjustedForecastKwh(d);
             TextView kwh = UiKit.text(this,
-                    String.format(Locale.GERMANY, "%.1f kWh", d.energyKwh),
+                    String.format(Locale.GERMANY, "%.1f kWh", adjusted),
                     15, UiKit.GREEN_DARK);
             kwh.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             row.addView(kwh);
             list.addView(row);
 
             ProgressBar p = UiKit.progress(this, 100,
-                    (int)Math.round(d.energyKwh / max * 100.0), UiKit.AMBER);
+                    (int)Math.round(adjusted / max * 100.0), UiKit.AMBER);
             LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, dp(5));
             pp.setMargins(dp(46), 0, 0, dp(5));
             list.addView(p, pp);
@@ -579,9 +676,16 @@ public final class MainActivity extends Activity {
         content.addView(b, buttonLp());
 
         TextView source = UiKit.caption(this,
-                "Quelle: Open-Meteo · Global Tilted Irradiance. Die Prognose berücksichtigt die in der App eingestellte Dachneigung, Ausrichtung und Anlagenleistung.");
-        source.setPadding(dp(4), dp(4), dp(4), dp(10));
+                "Basis: Open-Meteo Global Tilted Irradiance plus Dachneigung, Ausrichtung und Anlagenleistung. "
+                        + "Die manuelle Korrektur wirkt sofort. Das automatische Lernen nutzt einen rollierenden Vergleich mit PVOutput und passt nur vorsichtig um ±10 % nach.");
+        source.setPadding(dp(4), dp(4), dp(4), dp(4));
         content.addView(source);
+
+        TextView zeroExportNote = UiKit.caption(this,
+                "Hinweis bei Nulleinspeisung: Wenn die Anlage wegen voller Batterie oder geringer Last abgeregelt wird, sieht PVOutput weniger Ertrag als physikalisch möglich. "
+                        + "Darum ist das automatische Lernen absichtlich begrenzt. Mit dem Raspberry können wir solche Abregel-Tage später erkennen und aus dem Lernen herausnehmen.");
+        zeroExportNote.setPadding(dp(4), dp(2), dp(4), dp(10));
+        content.addView(zeroExportNote);
     }
 
     private void showOctopus() {
@@ -1307,10 +1411,17 @@ public final class MainActivity extends Activity {
                     double kwp = Double.parseDouble(kwpS.replace(',', '.'));
                     int tilt = parseInt(prefs.get("tilt", "30"), 30);
                     int az = parseInt(prefs.get("azimuth", "0"), 0);
-                    double pr = parseDouble(prefs.get("pr", "0.85"), 0.85);
-                    newForecast = new ForecastClient().load(lat, lon, tilt, az, kwp, pr);
+                    newForecast = new ForecastClient().load(lat, lon, tilt, az, kwp, 0.85);
                 } catch (Exception e) {
                     newForecastError = cleanError(e);
+                }
+            }
+
+            if (newForecast != null && !newForecast.isEmpty()) {
+                ForecastCalibration calibration = new ForecastCalibration(this);
+                calibration.recordForecasts(newForecast, manualForecastFactor());
+                if (newPv != null && newPv.week != null) {
+                    calibration.updateActuals(newPv.week);
                 }
             }
 
@@ -1401,7 +1512,7 @@ public final class MainActivity extends Activity {
             prefs.put("widget_power_w", Double.toString(pv.live.powerW));
         }
         if (forecast.size() > 1) {
-            prefs.put("widget_tomorrow_kwh", Double.toString(forecast.get(1).energyKwh));
+            prefs.put("widget_tomorrow_kwh", Double.toString(adjustedForecastKwh(forecast.get(1))));
         }
         prefs.put("widget_stamp",
                 "Stand " + LocalDateTime.now(BERLIN).format(DateTimeFormatter.ofPattern("dd.MM HH:mm")));
@@ -1413,6 +1524,25 @@ public final class MainActivity extends Activity {
         String time = LocalTime.now(BERLIN).format(DateTimeFormatter.ofPattern("HH:mm"));
         if (pv != null) headerStatus.setText("Daten aktualisiert · " + time);
         else headerStatus.setText("Energie auf einen Blick");
+    }
+
+    private double manualForecastFactor() {
+        double factor = parseDouble(prefs.get("forecast_manual_factor", "1.00"), 1.0);
+        return Math.max(0.60, Math.min(1.20, factor));
+    }
+
+    private ForecastCalibration.Stats forecastCalibrationStats() {
+        return new ForecastCalibration(this).stats();
+    }
+
+    private double autoForecastFactor() {
+        if (!prefs.getBool("forecast_auto_learning", true)) return 1.0;
+        return forecastCalibrationStats().autoFactor;
+    }
+
+    private double adjustedForecastKwh(ForecastClient.Day day) {
+        if (day == null) return 0.0;
+        return day.energyKwh * manualForecastFactor() * autoForecastFactor();
     }
 
     private double currentTariffPrice() {
