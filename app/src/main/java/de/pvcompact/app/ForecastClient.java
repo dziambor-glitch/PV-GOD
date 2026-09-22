@@ -18,6 +18,8 @@ public final class ForecastClient {
         public Integer weatherCode;
         public Double minC;
         public Double maxC;
+        public String sunrise = "";
+        public String sunset = "";
     }
 
     public List<Day> load(double lat, double lon, int tilt, int azimuth,
@@ -27,7 +29,7 @@ public final class ForecastClient {
                 + "?latitude=" + f(lat)
                 + "&longitude=" + f(lon)
                 + "&hourly=global_tilted_irradiance"
-                + "&daily=weather_code,temperature_2m_min,temperature_2m_max"
+                + "&daily=weather_code,temperature_2m_min,temperature_2m_max,sunrise,sunset"
                 + "&tilt=" + tilt
                 + "&azimuth=" + azimuth
                 + "&forecast_days=4"
