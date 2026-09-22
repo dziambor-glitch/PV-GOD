@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PV Compact</string>
+    <string name="widget_description">PV-Ertrag, Leistung, Prognose und Octopus-Preis</string>
+</resources>
