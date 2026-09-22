@@ -3,31 +3,35 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="14dp"
-    android:background="#EEFFFFFF">
+    android:padding="16dp"
+    android:background="@drawable/widget_bg">
 
     <TextView
         android:id="@+id/widget_title"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="PV Compact"
+        android:text="PV COMPACT"
         android:textStyle="bold"
-        android:textSize="16sp"
-        android:textColor="#111111" />
+        android:letterSpacing="0.08"
+        android:textSize="11sp"
+        android:textColor="#DFF4ED" />
 
     <TextView
         android:id="@+id/widget_today"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
         android:text="Heute: -- kWh"
-        android:textSize="20sp"
-        android:textColor="#111111" />
+        android:textStyle="bold"
+        android:textSize="24sp"
+        android:textColor="#FFFFFF" />
 
     <TextView
         android:id="@+id/widget_detail"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
         android:text="PV -- W · Morgen -- kWh"
-        android:textSize="13sp"
-        android:textColor="#444444" />
+        android:textSize="12sp"
+        android:textColor="#D8EEE7" />
 </LinearLayout>
