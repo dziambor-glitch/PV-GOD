@@ -806,27 +806,51 @@ public final class MainActivity extends Activity {
         EditText forecastPostcode = addField(forecastCard, "PLZ", prefs.get("forecast_postcode", ""), false);
         EditText forecastCity = addField(forecastCard, "Ort", prefs.get("forecast_city", ""), false);
 
-        Button locate = UiKit.secondaryButton(this, "Adresse finden");
-        LinearLayout.LayoutParams locateLp = new LinearLayout.LayoutParams(-1, dp(48));
-        locateLp.setMargins(0, 0, 0, dp(10));
-        forecastCard.addView(locate, locateLp);
+        String resolvedAddress = prefs.get("forecast_resolved", "");
+        String resolvedLat = prefs.get("lat", "");
+        String resolvedLon = prefs.get("lon", "");
+        boolean hasResolvedLocation = !resolvedAddress.isEmpty() && !resolvedLat.isEmpty() && !resolvedLon.isEmpty();
 
-        EditText lat = addField(forecastCard, "Breitengrad · automatisch", prefs.get("lat", ""), false);
-        EditText lon = addField(forecastCard, "Längengrad · automatisch", prefs.get("lon", ""), false);
-        lat.setFocusable(false);
-        lat.setClickable(false);
-        lon.setFocusable(false);
-        lon.setClickable(false);
+        LinearLayout locationStatus = new LinearLayout(this);
+        locationStatus.setOrientation(LinearLayout.VERTICAL);
+        locationStatus.setPadding(dp(14), dp(12), dp(14), dp(12));
+        locationStatus.setBackground(UiKit.outlined(this,
+                hasResolvedLocation ? UiKit.MINT : Color.rgb(247, 249, 248),
+                hasResolvedLocation ? Color.rgb(177, 224, 208) : UiKit.LINE,
+                15));
+
+        TextView locationState = UiKit.text(this,
+                hasResolvedLocation ? "✓ Standort gefunden" : "○ Standort noch nicht bestätigt",
+                15,
+                hasResolvedLocation ? UiKit.GREEN_DARK : UiKit.MUTED);
+        locationState.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        locationStatus.addView(locationState);
 
         TextView addressResolved = UiKit.caption(this,
-                prefs.get("forecast_resolved", "").isEmpty()
-                        ? "Noch keine Adresse aufgelöst."
-                        : "Gefunden: " + prefs.get("forecast_resolved", ""));
-        addressResolved.setPadding(dp(3), 0, dp(3), dp(10));
-        forecastCard.addView(addressResolved);
+                hasResolvedLocation ? resolvedAddress : "Bitte die Adresse eingeben und anschließend prüfen.");
+        addressResolved.setPadding(0, dp(4), 0, dp(2));
+        locationStatus.addView(addressResolved);
+
+        TextView locationCoords = UiKit.text(this,
+                hasResolvedLocation
+                        ? "Breitengrad " + resolvedLat + " · Längengrad " + resolvedLon
+                        : "Koordinaten werden automatisch ermittelt.",
+                12, UiKit.MUTED);
+        locationStatus.addView(locationCoords);
+
+        LinearLayout.LayoutParams locationLp = new LinearLayout.LayoutParams(-1, -2);
+        locationLp.setMargins(0, 0, 0, dp(10));
+        forecastCard.addView(locationStatus, locationLp);
+
+        Button locate = UiKit.secondaryButton(this,
+                hasResolvedLocation ? "Adresse neu prüfen" : "Adresse finden");
+        LinearLayout.LayoutParams locateLp = new LinearLayout.LayoutParams(-1, dp(48));
+        locateLp.setMargins(0, 0, 0, dp(12));
+        forecastCard.addView(locate, locateLp);
 
         locate.setOnClickListener(v -> geocodeForecastAddress(
-                forecastStreet, forecastPostcode, forecastCity, lat, lon, addressResolved));
+                forecastStreet, forecastPostcode, forecastCity,
+                locationStatus, locationState, addressResolved, locationCoords, locate));
 
         EditText kwp = addField(forecastCard, "Anlagengröße kWp", prefs.get("kwp", ""), false);
         EditText tilt = addField(forecastCard, "Dachneigung °", prefs.get("tilt", "30"), false);
@@ -882,11 +906,24 @@ public final class MainActivity extends Activity {
             prefs.put("pv_system", pvSystem.getText().toString());
             prefs.putSecret("pv_key", pvKey.getText().toString());
 
-            prefs.put("forecast_street", forecastStreet.getText().toString());
-            prefs.put("forecast_postcode", forecastPostcode.getText().toString());
-            prefs.put("forecast_city", forecastCity.getText().toString());
-            prefs.put("lat", lat.getText().toString());
-            prefs.put("lon", lon.getText().toString());
+            String streetValue = forecastStreet.getText().toString().trim();
+            String postcodeValue = forecastPostcode.getText().toString().trim();
+            String cityValue = forecastCity.getText().toString().trim();
+            boolean addressChanged =
+                    !streetValue.equals(prefs.get("forecast_street", "").trim())
+                    || !postcodeValue.equals(prefs.get("forecast_postcode", "").trim())
+                    || !cityValue.equals(prefs.get("forecast_city", "").trim());
+
+            if (addressChanged) {
+                Toast.makeText(this,
+                        "Die Adresse wurde geändert. Bitte zuerst „Adresse finden“ drücken.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            prefs.put("forecast_street", streetValue);
+            prefs.put("forecast_postcode", postcodeValue);
+            prefs.put("forecast_city", cityValue);
             prefs.put("kwp", kwp.getText().toString());
             prefs.put("tilt", tilt.getText().toString());
             prefs.put("azimuth", az.getText().toString());
@@ -968,7 +1005,8 @@ public final class MainActivity extends Activity {
     }
 
     private void geocodeForecastAddress(EditText street, EditText postcode, EditText city,
-                                        EditText lat, EditText lon, TextView resolved) {
+                                        LinearLayout statusBox, TextView state,
+                                        TextView resolved, TextView coords, Button locateButton) {
         String streetValue = street.getText().toString().trim();
         String postcodeValue = postcode.getText().toString().trim();
         String cityValue = city.getText().toString().trim();
@@ -978,13 +1016,21 @@ public final class MainActivity extends Activity {
             return;
         }
 
-        resolved.setText("Adresse wird gesucht …");
+        state.setText("⌕ Adresse wird gesucht …");
+        state.setTextColor(UiKit.AMBER);
+        resolved.setText(streetValue + (postcodeValue.isEmpty() ? "" : ", " + postcodeValue) + ", " + cityValue);
+        coords.setText("Koordinaten werden ermittelt …");
+        statusBox.setBackground(UiKit.outlined(this, UiKit.AMBER_SOFT,
+                Color.rgb(245, 222, 158), 15));
+        locateButton.setEnabled(false);
+
         io.execute(() -> {
             try {
                 GeocodingClient.Result result = new GeocodingClient().geocode(
                         streetValue, postcodeValue, cityValue, "Deutschland");
                 String latValue = String.format(Locale.US, "%.6f", result.lat);
                 String lonValue = String.format(Locale.US, "%.6f", result.lon);
+
                 prefs.put("forecast_street", streetValue);
                 prefs.put("forecast_postcode", postcodeValue);
                 prefs.put("forecast_city", cityValue);
@@ -993,15 +1039,26 @@ public final class MainActivity extends Activity {
                 prefs.put("lon", lonValue);
 
                 runOnUiThread(() -> {
-                    lat.setText(latValue);
-                    lon.setText(lonValue);
-                    resolved.setText("Gefunden: " + result.displayName);
-                    Toast.makeText(this, "Adresse gefunden.", Toast.LENGTH_SHORT).show();
+                    state.setText("✓ Standort gefunden");
+                    state.setTextColor(UiKit.GREEN_DARK);
+                    resolved.setText(result.displayName);
+                    coords.setText("Breitengrad " + latValue + " · Längengrad " + lonValue);
+                    statusBox.setBackground(UiKit.outlined(this, UiKit.MINT,
+                            Color.rgb(177, 224, 208), 15));
+                    locateButton.setText("Adresse neu prüfen");
+                    locateButton.setEnabled(true);
+                    Toast.makeText(this, "Standort übernommen.", Toast.LENGTH_SHORT).show();
                 });
             } catch (Exception e) {
                 String err = cleanError(e);
                 runOnUiThread(() -> {
-                    resolved.setText("Adresse konnte nicht gefunden werden.");
+                    state.setText("! Adresse nicht gefunden");
+                    state.setTextColor(UiKit.RED);
+                    resolved.setText("Bitte Schreibweise, Hausnummer, PLZ und Ort prüfen.");
+                    coords.setText("Es wurden keine Koordinaten übernommen.");
+                    statusBox.setBackground(UiKit.outlined(this, UiKit.RED_SOFT,
+                            Color.rgb(244, 190, 186), 15));
+                    locateButton.setEnabled(true);
                     Toast.makeText(this, err, Toast.LENGTH_LONG).show();
                 });
             }
