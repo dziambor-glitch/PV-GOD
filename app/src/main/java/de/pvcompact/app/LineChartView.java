@@ -27,7 +27,7 @@ public final class LineChartView extends View {
 
         text.setTextSize(dp(11));
         text.setColor(0xff555555);
-        setMinimumHeight(dp(220));
+        setMinimumHeight(Math.round(dp(220)));
     }
 
     public void setPoints(List<PvOutputClient.Point> p) {
