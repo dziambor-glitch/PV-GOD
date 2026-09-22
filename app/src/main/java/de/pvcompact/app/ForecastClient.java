@@ -69,6 +69,8 @@ public final class ForecastClient {
             JSONArray codes = daily.optJSONArray("weather_code");
             JSONArray mins = daily.optJSONArray("temperature_2m_min");
             JSONArray maxs = daily.optJSONArray("temperature_2m_max");
+            JSONArray sunrises = daily.optJSONArray("sunrise");
+            JSONArray sunsets = daily.optJSONArray("sunset");
             if (dates != null) {
                 for (int i = 0; i < dates.length(); i++) {
                     String date = dates.optString(i, "");
@@ -81,6 +83,8 @@ public final class ForecastClient {
                     if (codes != null && !codes.isNull(i)) d.weatherCode = codes.optInt(i);
                     if (mins != null && !mins.isNull(i)) d.minC = mins.optDouble(i);
                     if (maxs != null && !maxs.isNull(i)) d.maxC = maxs.optDouble(i);
+                    if (sunrises != null && !sunrises.isNull(i)) d.sunrise = sunrises.optString(i, "");
+                    if (sunsets != null && !sunsets.isNull(i)) d.sunset = sunsets.optString(i, "");
                 }
             }
         }
