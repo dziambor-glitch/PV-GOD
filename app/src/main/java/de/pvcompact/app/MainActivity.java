@@ -1,6 +1,7 @@
 package de.pvcompact.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -658,13 +659,19 @@ public final class MainActivity extends Activity {
             connect.addView(h);
             connect.addView(UiKit.caption(this,
                     octopusError.isEmpty()
-                            ? "Hinterlege Kundennummer plus API-Key oder Refresh Token in den Einstellungen."
+                            ? "Öffne die Einstellungen und tippe dort auf „Octopus verbinden“."
                             : octopusError));
             content.addView(connect);
         }
 
-        Button test = UiKit.primaryButton(this, "Octopus verbinden & Daten laden");
-        test.setOnClickListener(v -> refreshOctopus());
+        boolean hasOctopusAccess = !prefs.get("oct_account", "").isEmpty()
+                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty());
+        Button test = UiKit.primaryButton(this,
+                hasOctopusAccess ? "Smart-Meter-Daten aktualisieren" : "Octopus einrichten");
+        test.setOnClickListener(v -> {
+            if (hasOctopusAccess) refreshOctopus();
+            else showTab("Einstellungen");
+        });
         content.addView(test, buttonLp());
 
         Button docs = UiKit.secondaryButton(this, "Kraken API-Dokumentation");
@@ -905,18 +912,93 @@ public final class MainActivity extends Activity {
 
         content.addView(forecastCard);
 
-        LinearLayout octCard = settingsCard("Octopus Energy", "API-Key / Refresh Token und Go-Tarif");
+        LinearLayout octCard = settingsCard("Octopus Energy", "Konto verbinden und Go-Tarif einstellen");
         TextView octNote = UiKit.caption(this,
-                "Kein E-Mail/Passwort-Login. API-Key oder Refresh Token genügt.");
-        octNote.setPadding(0, 0, 0, dp(8));
+                "Im normalen Bereich brauchst du nur deine Kundennummer. Technische Zugangsdaten liegen hinter „Octopus verbinden“ und werden verschlüsselt gespeichert.");
+        octNote.setPadding(0, 0, 0, dp(9));
         octCard.addView(octNote);
-        EditText octAccount = addField(octCard, "Kundennummer", prefs.get("oct_account", ""), false);
-        EditText octKey = addField(octCard, "Kraken API-Key · optional", prefs.getSecret("oct_api_key"), true);
-        EditText octRefresh = addField(octCard, "Refresh Token · optional", prefs.getSecret("oct_refresh"), true);
-        EditText cheapStart = addField(octCard, "Günstig ab HH:mm", prefs.get("cheap_start", "00:00"), false);
-        EditText cheapEnd = addField(octCard, "Günstig bis HH:mm", prefs.get("cheap_end", "05:00"), false);
-        EditText cheapPrice = addField(octCard, "Günstiger Preis ct/kWh", prefs.get("cheap_price", "19"), false);
-        EditText normalPrice = addField(octCard, "Normalpreis ct/kWh", prefs.get("normal_price", "29"), false);
+
+        EditText octAccount = addLabeledField(
+                octCard,
+                "Kundennummer",
+                "Deine Octopus-Kundennummer identifiziert das Konto, ist aber allein noch kein API-Zugang.",
+                prefs.get("oct_account", ""),
+                false);
+
+        boolean octHasAccount = !prefs.get("oct_account", "").trim().isEmpty();
+        boolean octHasCredential = !prefs.getSecret("oct_api_key").isEmpty()
+                || !prefs.getSecret("oct_refresh").isEmpty();
+
+        LinearLayout octStatus = new LinearLayout(this);
+        octStatus.setOrientation(LinearLayout.VERTICAL);
+        octStatus.setPadding(dp(14), dp(12), dp(14), dp(12));
+        int octStatusBg = octopus != null ? UiKit.MINT
+                : (octHasCredential ? UiKit.AMBER_SOFT : Color.rgb(247, 249, 248));
+        int octStatusLine = octopus != null ? Color.rgb(177, 224, 208)
+                : (octHasCredential ? Color.rgb(245, 222, 158) : UiKit.LINE);
+        octStatus.setBackground(UiKit.outlined(this, octStatusBg, octStatusLine, 15));
+
+        String octStatusTitleText;
+        String octStatusDetailText;
+        int octStatusColor;
+        if (octopus != null) {
+            octStatusTitleText = "✓ Octopus verbunden";
+            octStatusDetailText = "Smart-Meter-Zugriff funktioniert.";
+            octStatusColor = UiKit.GREEN_DARK;
+        } else if (!octopusError.isEmpty() && octHasCredential) {
+            octStatusTitleText = "! Zugang gespeichert, Verbindung fehlgeschlagen";
+            octStatusDetailText = octopusError;
+            octStatusColor = UiKit.RED;
+        } else if (octHasCredential) {
+            octStatusTitleText = "Zugangsschlüssel gespeichert";
+            octStatusDetailText = "Bereit zum Verbindungstest.";
+            octStatusColor = UiKit.AMBER;
+        } else if (octHasAccount) {
+            octStatusTitleText = "Kundennummer vorhanden · Zugangsschlüssel fehlt";
+            octStatusDetailText = "Tippe auf „Octopus verbinden“, um den API-Zugang zu hinterlegen.";
+            octStatusColor = UiKit.MUTED;
+        } else {
+            octStatusTitleText = "Noch nicht eingerichtet";
+            octStatusDetailText = "Kundennummer eintragen und anschließend Octopus verbinden.";
+            octStatusColor = UiKit.MUTED;
+        }
+
+        TextView octStatusTitle = UiKit.text(this, octStatusTitleText, 15, octStatusColor);
+        octStatusTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        octStatus.addView(octStatusTitle);
+        TextView octStatusDetail = UiKit.caption(this, octStatusDetailText);
+        octStatusDetail.setPadding(0, dp(4), 0, 0);
+        octStatus.addView(octStatusDetail);
+
+        LinearLayout.LayoutParams octStatusLp = new LinearLayout.LayoutParams(-1, -2);
+        octStatusLp.setMargins(0, 0, 0, dp(10));
+        octCard.addView(octStatus, octStatusLp);
+
+        Button octConnect = octHasCredential
+                ? UiKit.secondaryButton(this, "Octopus-Zugang ändern")
+                : UiKit.primaryButton(this, "Octopus verbinden");
+        octConnect.setOnClickListener(v -> {
+            String accountValue = octAccount.getText().toString().trim();
+            if (accountValue.isEmpty()) {
+                Toast.makeText(this, "Bitte zuerst die Kundennummer eingeben.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            prefs.put("oct_account", accountValue);
+            showOctopusConnectionDialog(accountValue);
+        });
+        LinearLayout.LayoutParams octConnectLp = new LinearLayout.LayoutParams(-1, dp(48));
+        octConnectLp.setMargins(0, 0, 0, dp(14));
+        octCard.addView(octConnect, octConnectLp);
+
+        TextView tariffTitle = UiKit.text(this, "Go-Tarif", 16, UiKit.INK);
+        tariffTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        tariffTitle.setPadding(0, dp(4), 0, dp(8));
+        octCard.addView(tariffTitle);
+
+        EditText cheapStart = addLabeledField(octCard, "Günstig ab", "Beginn des günstigen Ladefensters, z. B. 00:00", prefs.get("cheap_start", "00:00"), false);
+        EditText cheapEnd = addLabeledField(octCard, "Günstig bis", "Ende des günstigen Ladefensters, z. B. 05:00", prefs.get("cheap_end", "05:00"), false);
+        EditText cheapPrice = addLabeledField(octCard, "Günstiger Preis", "Cent pro kWh", prefs.get("cheap_price", "19"), false);
+        EditText normalPrice = addLabeledField(octCard, "Normalpreis", "Cent pro kWh außerhalb des günstigen Fensters", prefs.get("normal_price", "29"), false);
         content.addView(octCard);
 
         LinearLayout autoCard = settingsCard("Raspberry & Automatik", "Energiecontroller und Sicherheitsgrenzen");
@@ -977,8 +1059,6 @@ public final class MainActivity extends Activity {
             if (prefs.get("pr", "").isEmpty()) prefs.put("pr", "0.85");
 
             prefs.put("oct_account", octAccount.getText().toString());
-            prefs.putSecret("oct_api_key", octKey.getText().toString());
-            prefs.putSecret("oct_refresh", octRefresh.getText().toString());
             prefs.put("cheap_start", cheapStart.getText().toString());
             prefs.put("cheap_end", cheapEnd.getText().toString());
             prefs.put("cheap_price", cheapPrice.getText().toString());
@@ -1068,6 +1148,66 @@ public final class MainActivity extends Activity {
         b.setOnClickListener(listener);
         card.addView(b, new LinearLayout.LayoutParams(-1, dp(48)));
         content.addView(card);
+    }
+
+    private void showOctopusConnectionDialog(String accountNumber) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+
+        TextView intro = UiKit.caption(this,
+                "Konto " + accountNumber + "\n\nFür den geschützten API-Zugriff braucht Octopus zusätzlich einen API-Key oder Refresh Token. E-Mail und Passwort werden von PV Compact nicht gespeichert oder verwendet.");
+        intro.setPadding(0, 0, 0, dp(12));
+        box.addView(intro);
+
+        EditText apiKey = UiKit.input(this, "Kraken API-Key", prefs.getSecret("oct_api_key"), true);
+        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, dp(52));
+        ap.setMargins(0, 0, 0, dp(9));
+        box.addView(apiKey, ap);
+
+        TextView or = UiKit.text(this, "oder", 12, UiKit.MUTED);
+        or.setGravity(Gravity.CENTER);
+        or.setPadding(0, 0, 0, dp(9));
+        box.addView(or);
+
+        EditText refresh = UiKit.input(this, "Refresh Token", prefs.getSecret("oct_refresh"), true);
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, dp(52));
+        rp.setMargins(0, 0, 0, dp(10));
+        box.addView(refresh, rp);
+
+        TextView note = UiKit.caption(this,
+                "Du brauchst nur einen der beiden Schlüssel. Beide werden verschlüsselt im Android Keystore abgelegt.");
+        box.addView(note);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Octopus verbinden")
+                .setView(box)
+                .setNegativeButton("Abbrechen", null)
+                .setPositiveButton("Speichern & testen", null)
+                .create();
+
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String keyValue = apiKey.getText().toString().trim();
+                    String refreshValue = refresh.getText().toString().trim();
+                    if (keyValue.isEmpty() && refreshValue.isEmpty()) {
+                        Toast.makeText(this,
+                                "Bitte API-Key oder Refresh Token eingeben.",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+
+                    prefs.put("oct_account", accountNumber);
+                    prefs.putSecret("oct_api_key", keyValue);
+                    prefs.putSecret("oct_refresh", refreshValue);
+                    octopus = null;
+                    octopusError = "";
+                    dialog.dismiss();
+                    Toast.makeText(this, "Zugang gespeichert. Verbindung wird geprüft …", Toast.LENGTH_SHORT).show();
+                    refreshOctopus();
+                    if ("Einstellungen".equals(currentTab)) showTab("Einstellungen");
+                }));
+        dialog.show();
     }
 
     private void geocodeForecastAddress(EditText street, EditText postcode, EditText city,
@@ -1209,13 +1349,13 @@ public final class MainActivity extends Activity {
                     octopus = s;
                     octopusError = "";
                     updateHeaderStatus();
-                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab)) showTab(currentTab);
+                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
                 });
             } catch (Exception e) {
                 String err = cleanError(e);
                 runOnUiThread(() -> {
                     octopusError = err;
-                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab)) showTab(currentTab);
+                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
                 });
             }
         });
