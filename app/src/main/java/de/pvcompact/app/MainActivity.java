@@ -1,13 +1,11 @@
 package de.pvcompact.app;
 
 import android.app.Activity;
-import android.appwidget.AppWidgetManager;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
-import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -15,12 +13,18 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.TextStyle;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -28,10 +32,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
+    private static final ZoneId BERLIN = ZoneId.of("Europe/Berlin");
+
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final List<NavItem> navItems = new ArrayList<>();
+
     private Prefs prefs;
     private LinearLayout content;
-    private String currentTab = "Übersicht";
+    private TextView headerStatus;
+    private String currentTab = "Home";
 
     private PvOutputClient.Dashboard pv;
     private List<ForecastClient.Day> forecast = Collections.emptyList();
@@ -44,9 +53,20 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = new Prefs(this);
+
+        getWindow().setStatusBarColor(UiKit.BG);
+        getWindow().setNavigationBarColor(UiKit.CARD);
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+
         buildShell();
-        showTab("Übersicht");
+        showTab("Home");
         refreshPvForecast(false);
+
+        if (!prefs.get("oct_account", "").isEmpty()
+                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
+            refreshOctopus();
+        }
     }
 
     @Override
@@ -58,266 +78,777 @@ public final class MainActivity extends Activity {
     private void buildShell() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(250, 250, 250));
+        root.setBackgroundColor(UiKit.BG);
 
-        TextView title = new TextView(this);
-        title.setText("PV Compact · Clean 1.0");
-        title.setTextSize(22);
-        title.setTextColor(Color.rgb(20,20,20));
-        title.setGravity(Gravity.CENTER_VERTICAL);
-        title.setPadding(dp(16), dp(14), dp(16), dp(10));
-        root.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout header = UiKit.row(this);
+        header.setPadding(dp(18), dp(12), dp(12), dp(10));
+        header.setBackgroundColor(UiKit.BG);
 
-        HorizontalScrollView navScroll = new HorizontalScrollView(this);
-        navScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout nav = new LinearLayout(this);
-        nav.setOrientation(LinearLayout.HORIZONTAL);
-        String[] tabs = {"Übersicht", "Verlauf", "Jahre", "Forecast", "Octopus", "Automatik", "Einstellungen"};
-        for (String tab : tabs) {
-            Button b = new Button(this);
-            b.setText(tab);
-            b.setAllCaps(false);
-            b.setOnClickListener(v -> showTab(tab));
-            nav.addView(b, new LinearLayout.LayoutParams(-2, dp(48)));
-        }
-        navScroll.addView(nav);
-        root.addView(navScroll, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout brand = new LinearLayout(this);
+        brand.setOrientation(LinearLayout.VERTICAL);
+        TextView brandName = UiKit.text(this, "PV Compact", 22, UiKit.INK);
+        brandName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        headerStatus = UiKit.text(this, "Energie auf einen Blick", 12, UiKit.MUTED);
+        brand.addView(brandName);
+        brand.addView(headerStatus);
+        header.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        Button refresh = UiKit.secondaryButton(this, "↻");
+        refresh.setTextSize(22);
+        refresh.setContentDescription("Daten aktualisieren");
+        refresh.setOnClickListener(v -> refreshAll());
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        rp.setMargins(dp(6), 0, dp(6), 0);
+        header.addView(refresh, rp);
+
+        Button settings = UiKit.secondaryButton(this, "⚙");
+        settings.setTextSize(18);
+        settings.setContentDescription("Einstellungen");
+        settings.setOnClickListener(v -> showTab("Einstellungen"));
+        header.addView(settings, new LinearLayout.LayoutParams(dp(46), dp(46)));
+
+        root.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setClipToPadding(false);
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(14), dp(10), dp(14), dp(28));
+        content.setPadding(dp(16), dp(8), dp(16), dp(30));
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        View divider = UiKit.divider(this);
+        root.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+
+        LinearLayout nav = UiKit.row(this);
+        nav.setPadding(dp(8), dp(6), dp(8), dp(8));
+        nav.setBackgroundColor(UiKit.CARD);
+        addNav(nav, "⌂", "Home", "Home");
+        addNav(nav, "☀", "PV", "PV");
+        addNav(nav, "☁", "Forecast", "Forecast");
+        addNav(nav, "€", "Octopus", "Octopus");
+        addNav(nav, "⚙", "System", "System");
+        root.addView(nav, new LinearLayout.LayoutParams(-1, dp(68)));
+
         setContentView(root);
+    }
+
+    private void addNav(LinearLayout nav, String icon, String label, String tab) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER);
+        item.setPadding(dp(4), dp(4), dp(4), dp(4));
+        item.setClickable(true);
+        item.setFocusable(true);
+
+        TextView i = UiKit.text(this, icon, 18, UiKit.MUTED);
+        i.setGravity(Gravity.CENTER);
+        TextView l = UiKit.text(this, label, 11, UiKit.MUTED);
+        l.setGravity(Gravity.CENTER);
+        l.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        item.addView(i, new LinearLayout.LayoutParams(-1, dp(26)));
+        item.addView(l, new LinearLayout.LayoutParams(-1, dp(20)));
+        item.setOnClickListener(v -> showTab(tab));
+
+        nav.addView(item, new LinearLayout.LayoutParams(0, -1, 1f));
+        navItems.add(new NavItem(tab, item, i, l));
     }
 
     private void showTab(String tab) {
         currentTab = tab;
         content.removeAllViews();
+        updateNav();
+
         switch (tab) {
-            case "Verlauf": showHistory(); break;
-            case "Jahre": showYears(); break;
-            case "Forecast": showForecast(); break;
-            case "Octopus": showOctopus(); break;
-            case "Automatik": showAutomation(); break;
-            case "Einstellungen": showSettings(); break;
-            default: showOverview(); break;
+            case "PV":
+                showPv();
+                break;
+            case "Forecast":
+                showForecast();
+                break;
+            case "Octopus":
+                showOctopus();
+                break;
+            case "System":
+                showSystem();
+                break;
+            case "Einstellungen":
+                showSettings();
+                break;
+            default:
+                showHome();
+                break;
         }
     }
 
-    private void showOverview() {
-        heading("Übersicht");
-        TextView status = body("");
+    private void updateNav() {
+        for (NavItem item : navItems) {
+            boolean selected = item.tab.equals(currentTab);
+            item.container.setBackground(selected
+                    ? UiKit.roundRect(this, UiKit.MINT, 15)
+                    : UiKit.roundRect(this, Color.TRANSPARENT, 15));
+            int color = selected ? UiKit.GREEN_DARK : UiKit.MUTED;
+            item.icon.setTextColor(color);
+            item.label.setTextColor(color);
+        }
+    }
+
+    private void showHome() {
+        pageHeader(greeting(), "Dein Energie-Dashboard für heute");
+
         if (pv == null) {
-            status.setText(pvError.isEmpty()
-                    ? "PVOutput: noch keine Daten. Unter Einstellungen System-ID und API-Key hinterlegen."
-                    : "PVOutput: " + pvError);
+            LinearLayout empty = UiKit.card(this);
+            empty.addView(UiKit.overline(this, "PVOUTPUT", UiKit.GREEN));
+            TextView h = UiKit.text(this, "Noch keine PV-Daten", 21, UiKit.INK);
+            h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            h.setPadding(0, dp(8), 0, dp(6));
+            empty.addView(h);
+            empty.addView(UiKit.caption(this,
+                    pvError.isEmpty()
+                            ? "Hinterlege in den Einstellungen deine PVOutput System-ID und den API-Key."
+                            : pvError));
+            Button setup = UiKit.primaryButton(this, "PVOutput einrichten");
+            setup.setOnClickListener(v -> showTab("Einstellungen"));
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, dp(48));
+            bp.setMargins(0, dp(14), 0, 0);
+            empty.addView(setup, bp);
+            content.addView(empty);
         } else {
-            StringBuilder s = new StringBuilder();
-            s.append(String.format(Locale.GERMANY, "Heute %.2f kWh\n", pv.live.energyWh / 1000.0));
-            s.append(String.format(Locale.GERMANY, "PV jetzt %.0f W\n", pv.live.powerW));
-            if (pv.live.consumptionW != null) {
-                s.append(String.format(Locale.GERMANY, "Verbrauch jetzt %.0f W\n", pv.live.consumptionW));
-            }
-            if (pv.rateRemaining != null) s.append("PVOutput API Rest: ").append(pv.rateRemaining).append("\n");
-            if (!forecast.isEmpty()) {
-                ForecastClient.Day today = forecast.get(0);
-                s.append(String.format(Locale.GERMANY, "PV-Prognose heute %.1f kWh\n", today.energyKwh));
-                if (forecast.size() > 1) {
-                    s.append(String.format(Locale.GERMANY, "PV-Prognose morgen %.1f kWh\n", forecast.get(1).energyKwh));
-                }
-            } else if (!forecastError.isEmpty()) {
-                s.append("Forecast: ").append(forecastError).append("\n");
-            }
-            if (octopus != null) {
-                s.append(String.format(Locale.GERMANY, "Octopus Netzbezug zuletzt %.2f kWh", octopus.totalKwh));
-            }
-            status.setText(s.toString().trim());
+            heroToday();
         }
 
-        Button refresh = button("Alles aktualisieren");
-        refresh.setOnClickListener(v -> {
-            refreshPvForecast(true);
-            refreshOctopus();
-        });
+        content.addView(UiKit.sectionTitle(this, "Auf einen Blick"));
+        LinearLayout row1 = UiKit.row(this);
+        row1.setBaselineAligned(false);
+        row1.addView(metric(
+                "PV JETZT",
+                pv == null ? "—" : String.format(Locale.GERMANY, "%.0f W", pv.live.powerW),
+                "aktuelle Leistung",
+                UiKit.GREEN,
+                UiKit.MINT),
+                metricLp(true));
 
-        card("API-schonend", "Live-PV maximal alle 2 Minuten, Tageskurve 15 Minuten, 7 Tage 6 Stunden, Jahre 24 Stunden. Das Widget greift nur auf den App-Cache zu und erzeugt keine zusätzlichen PVOutput-Aufrufe.");
-        card("Nulleinspeisung", "PVOutput zeigt bei deinem System die tatsächlich genutzte PV-Energie. Abgeregelte Leistung ist darin nicht automatisch enthalten; eine spätere Schätzung kommt aus dem Raspberry-Controller.");
+        String consumption = pv != null && pv.live.consumptionW != null
+                ? String.format(Locale.GERMANY, "%.0f W", pv.live.consumptionW)
+                : "—";
+        row1.addView(metric("VERBRAUCH", consumption, "Haus aktuell", UiKit.BLUE, UiKit.BLUE_SOFT),
+                metricLp(false));
+        content.addView(row1);
+
+        LinearLayout row2 = UiKit.row(this);
+        row2.setBaselineAligned(false);
+        String tomorrow = forecast.size() > 1
+                ? String.format(Locale.GERMANY, "%.1f kWh", forecast.get(1).energyKwh)
+                : "—";
+        row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
+                metricLp(true));
+
+        double price = currentTariffPrice();
+        row2.addView(metric("STROMPREIS",
+                        String.format(Locale.GERMANY, "%.0f ct", price),
+                        isCheapNow() ? "Go günstig aktiv" : "Go Normaltarif",
+                        UiKit.PURPLE,
+                        UiKit.PURPLE_SOFT),
+                metricLp(false));
+        content.addView(row2);
+
+        content.addView(UiKit.sectionTitle(this, "Verbindungen"));
+        LinearLayout statusCard = UiKit.card(this);
+        statusCard.addView(statusLine("PVOutput", pv != null,
+                pv != null ? "verbunden" : (pvError.isEmpty() ? "nicht eingerichtet" : "Fehler")));
+        statusCard.addView(UiKit.divider(this), dividerLp());
+        statusCard.addView(statusLine("Wetter & PV-Forecast", !forecast.isEmpty(),
+                !forecast.isEmpty() ? "aktuell" : (forecastError.isEmpty() ? "nicht eingerichtet" : "Fehler")));
+        statusCard.addView(UiKit.divider(this), dividerLp());
+        statusCard.addView(statusLine("Octopus Energy", octopus != null,
+                octopus != null ? "Smart-Meter geladen" : (octopusError.isEmpty() ? "optional" : "Fehler")));
+        statusCard.addView(UiKit.divider(this), dividerLp());
+        boolean pi = !prefs.get("controller_url", "").isEmpty();
+        statusCard.addView(statusLine("Raspberry Controller", pi,
+                pi ? "Adresse hinterlegt" : "noch nicht verbunden"));
+        content.addView(statusCard);
+
+        Button refresh = UiKit.primaryButton(this, "Alle Daten aktualisieren");
+        refresh.setOnClickListener(v -> refreshAll());
+        content.addView(refresh, buttonLp());
+
+        LinearLayout note = UiKit.card(this);
+        note.addView(UiKit.overline(this, "NULL-EINSPEISUNG", UiKit.GREEN));
+        TextView noteTitle = UiKit.text(this, "PV sinnvoll nutzen statt abregeln", 18, UiKit.INK);
+        noteTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        noteTitle.setPadding(0, dp(7), 0, dp(5));
+        note.addView(noteTitle);
+        note.addView(UiKit.caption(this,
+                "Später nutzt der Raspberry PV-Prognose, Batterie, Wärmepumpe und EV-Lader gemeinsam, damit möglichst wenig Solarenergie abgeregelt wird."));
+        content.addView(note);
     }
 
-    private void showHistory() {
-        heading("Tagesverlauf & 7 Tage");
+    private void heroToday() {
+        LinearLayout hero = new LinearLayout(this);
+        hero.setOrientation(LinearLayout.VERTICAL);
+        hero.setPadding(dp(20), dp(18), dp(20), dp(18));
+        hero.setBackground(UiKit.hero(this));
+        hero.setElevation(dp(3));
+
+        TextView over = UiKit.overline(this, "PV-ERTRAG HEUTE", Color.rgb(210, 241, 231));
+        hero.addView(over);
+
+        TextView amount = UiKit.text(this,
+                String.format(Locale.GERMANY, "%.2f kWh", pv.live.energyWh / 1000.0),
+                36, Color.WHITE);
+        amount.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        amount.setPadding(0, dp(7), 0, dp(2));
+        hero.addView(amount);
+
+        TextView live = UiKit.text(this,
+                String.format(Locale.GERMANY, "Jetzt %.0f W · Stand %s", pv.live.powerW, pv.live.time),
+                14, Color.rgb(218, 240, 233));
+        hero.addView(live);
+
+        if (!forecast.isEmpty() && forecast.get(0).energyKwh > 0) {
+            double actual = pv.live.energyWh / 1000.0;
+            double target = forecast.get(0).energyKwh;
+            int progress = (int)Math.round(Math.min(100, actual / target * 100.0));
+
+            TextView progressLabel = UiKit.text(this,
+                    String.format(Locale.GERMANY, "%d %% von %.1f kWh Tagesprognose", progress, target),
+                    12, Color.rgb(218, 240, 233));
+            progressLabel.setPadding(0, dp(16), 0, dp(6));
+            hero.addView(progressLabel);
+
+            ProgressBar bar = UiKit.progress(this, 100, progress, Color.WHITE);
+            bar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(41, 122, 98)));
+            hero.addView(bar, new LinearLayout.LayoutParams(-1, dp(7)));
+        }
+
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-1, -2);
+        hp.setMargins(0, 0, 0, dp(6));
+        content.addView(hero, hp);
+    }
+
+    private LinearLayout metric(String label, String value, String detail, int accent, int soft) {
+        return UiKit.metricCard(this, label, value, detail, accent, soft);
+    }
+
+    private LinearLayout.LayoutParams metricLp(boolean first) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1f);
+        if (first) p.setMargins(0, 0, dp(6), dp(12));
+        else p.setMargins(dp(6), 0, 0, dp(12));
+        return p;
+    }
+
+    private View statusLine(String title, boolean ok, String detail) {
+        LinearLayout row = UiKit.row(this);
+        row.setPadding(0, dp(5), 0, dp(5));
+
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        TextView name = UiKit.text(this, title, 15, UiKit.INK);
+        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView sub = UiKit.text(this, detail, 12, UiKit.MUTED);
+        labels.addView(name);
+        labels.addView(sub);
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView pill = UiKit.pill(this,
+                ok ? "OK" : "OFF",
+                ok ? UiKit.GREEN_DARK : UiKit.MUTED,
+                ok ? UiKit.MINT : Color.rgb(238, 241, 240));
+        row.addView(pill);
+        return row;
+    }
+
+    private void showPv() {
+        pageHeader("PV & Verlauf", "Live-Daten, Tageskurve und Ertragshistorie");
+
         if (pv == null) {
-            body(pvError.isEmpty() ? "Noch keine PVOutput-Daten geladen." : pvError);
-            buttonRefreshPv();
+            emptyState("Keine PVOutput-Daten",
+                    pvError.isEmpty()
+                            ? "Richte PVOutput zuerst in den Einstellungen ein."
+                            : pvError,
+                    "Einstellungen öffnen",
+                    v -> showTab("Einstellungen"));
             return;
         }
 
-        TextView live = body(String.format(Locale.GERMANY,
-                "%s %s · %.2f kWh · %.0f W",
-                pv.live.date, pv.live.time, pv.live.energyWh / 1000.0, pv.live.powerW));
+        LinearLayout liveCard = UiKit.card(this);
+        liveCard.addView(UiKit.overline(this, "LIVE", UiKit.GREEN));
+        LinearLayout liveRow = UiKit.row(this);
+        liveRow.setPadding(0, dp(9), 0, 0);
+
+        LinearLayout pvCol = new LinearLayout(this);
+        pvCol.setOrientation(LinearLayout.VERTICAL);
+        pvCol.addView(UiKit.value(this, String.format(Locale.GERMANY, "%.0f W", pv.live.powerW), UiKit.INK));
+        pvCol.addView(UiKit.caption(this, "PV-Leistung"));
+        liveRow.addView(pvCol, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        LinearLayout dayCol = new LinearLayout(this);
+        dayCol.setOrientation(LinearLayout.VERTICAL);
+        dayCol.addView(UiKit.value(this, String.format(Locale.GERMANY, "%.2f", pv.live.energyWh / 1000.0), UiKit.INK));
+        dayCol.addView(UiKit.caption(this, "kWh heute"));
+        liveRow.addView(dayCol, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        if (pv.live.consumptionW != null) {
+            LinearLayout loadCol = new LinearLayout(this);
+            loadCol.setOrientation(LinearLayout.VERTICAL);
+            loadCol.addView(UiKit.value(this, String.format(Locale.GERMANY, "%.0f W", pv.live.consumptionW), UiKit.INK));
+            loadCol.addView(UiKit.caption(this, "Verbrauch"));
+            liveRow.addView(loadCol, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        liveCard.addView(liveRow);
+        content.addView(liveCard);
+
+        content.addView(UiKit.sectionTitle(this, "Heute"));
+        LinearLayout chartCard = UiKit.card(this);
+        TextView chartTitle = UiKit.text(this, "Leistung über den Tag", 16, UiKit.INK);
+        chartTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        chartCard.addView(chartTitle);
+        TextView chartSub = UiKit.caption(this, "PV-Leistung in Watt");
+        chartSub.setPadding(0, dp(2), 0, dp(8));
+        chartCard.addView(chartSub);
 
         LineChartView chart = new LineChartView(this);
         chart.setPoints(pv.history);
-        content.addView(chart, new LinearLayout.LayoutParams(-1, dp(245)));
+        chartCard.addView(chart, new LinearLayout.LayoutParams(-1, dp(230)));
+        content.addView(chartCard);
 
-        subheading("Letzte 7 Tage");
-        if (pv.week.isEmpty()) body("Keine 7-Tage-Daten verfügbar.");
-        for (PvOutputClient.Day d : pv.week) {
-            String t = String.format(Locale.GERMANY, "%s   %.2f kWh", d.date, d.generatedWh / 1000.0);
-            if (d.consumedWh != null) t += String.format(Locale.GERMANY, "   Verbrauch %.2f kWh", d.consumedWh / 1000.0);
-            body(t);
-        }
-        buttonRefreshPv();
-    }
+        content.addView(UiKit.sectionTitle(this, "Letzte 7 Tage"));
+        LinearLayout weekCard = UiKit.card(this);
+        if (pv.week.isEmpty()) {
+            weekCard.addView(UiKit.caption(this, "Keine 7-Tage-Daten verfügbar."));
+        } else {
+            double max = 1;
+            for (PvOutputClient.Day d : pv.week) max = Math.max(max, d.generatedWh);
+            for (int i = 0; i < pv.week.size(); i++) {
+                PvOutputClient.Day d = pv.week.get(i);
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                row.setPadding(0, dp(7), 0, dp(7));
 
-    private void showYears() {
-        heading("Jahre");
-        if (pv == null || pv.years.isEmpty()) {
-            body(pvError.isEmpty() ? "Noch keine Jahresdaten geladen." : pvError);
-            buttonRefreshPv();
-            return;
+                LinearLayout top = UiKit.row(this);
+                TextView date = UiKit.text(this, shortDate(d.date), 14, UiKit.INK);
+                date.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                top.addView(date, new LinearLayout.LayoutParams(0, -2, 1f));
+                TextView val = UiKit.text(this,
+                        String.format(Locale.GERMANY, "%.1f kWh", d.generatedWh / 1000.0),
+                        14, UiKit.GREEN_DARK);
+                val.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                top.addView(val);
+                row.addView(top);
+
+                int pct = (int)Math.round(d.generatedWh / max * 100.0);
+                ProgressBar p = UiKit.progress(this, 100, pct, UiKit.GREEN);
+                LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, dp(6));
+                pp.setMargins(0, dp(7), 0, 0);
+                row.addView(p, pp);
+
+                if (d.consumedWh != null) {
+                    TextView cons = UiKit.text(this,
+                            String.format(Locale.GERMANY, "Verbrauch %.1f kWh", d.consumedWh / 1000.0),
+                            11, UiKit.MUTED);
+                    cons.setPadding(0, dp(4), 0, 0);
+                    row.addView(cons);
+                }
+                weekCard.addView(row);
+                if (i < pv.week.size() - 1) weekCard.addView(UiKit.divider(this), dividerLp());
+            }
         }
-        for (PvOutputClient.Year y : pv.years) {
-            StringBuilder s = new StringBuilder();
-            s.append(String.format(Locale.GERMANY, "%.1f kWh Erzeugung", y.generatedWh / 1000.0));
-            if (y.consumedWh != null) s.append(String.format(Locale.GERMANY, "\n%.1f kWh Verbrauch", y.consumedWh / 1000.0));
-            if (y.importedWh != null) s.append(String.format(Locale.GERMANY, "\n%.1f kWh Import", y.importedWh / 1000.0));
-            card(String.valueOf(y.year), s.toString());
+        content.addView(weekCard);
+
+        if (!pv.years.isEmpty()) {
+            content.addView(UiKit.sectionTitle(this, "Jahresübersicht"));
+            HorizontalScrollView hs = new HorizontalScrollView(this);
+            hs.setHorizontalScrollBarEnabled(false);
+            LinearLayout years = UiKit.row(this);
+            years.setPadding(0, 0, dp(6), 0);
+            int count = Math.min(5, pv.years.size());
+            for (int i = 0; i < count; i++) {
+                PvOutputClient.Year y = pv.years.get(i);
+                LinearLayout c = new LinearLayout(this);
+                c.setOrientation(LinearLayout.VERTICAL);
+                c.setPadding(dp(15), dp(14), dp(15), dp(14));
+                c.setBackground(UiKit.outlined(this, UiKit.CARD, UiKit.LINE, 18));
+                c.addView(UiKit.overline(this, String.valueOf(y.year), UiKit.GREEN));
+                TextView v = UiKit.text(this,
+                        String.format(Locale.GERMANY, "%.0f kWh", y.generatedWh / 1000.0),
+                        21, UiKit.INK);
+                v.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                v.setPadding(0, dp(7), 0, dp(2));
+                c.addView(v);
+                c.addView(UiKit.caption(this, "PV-Erzeugung"));
+                LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(150), -2);
+                cp.setMargins(0, 0, dp(10), dp(12));
+                years.addView(c, cp);
+            }
+            hs.addView(years);
+            content.addView(hs);
         }
+
+        Button b = UiKit.secondaryButton(this, "PVOutput aktualisieren");
+        b.setOnClickListener(v -> refreshPvForecast(true));
+        content.addView(b, buttonLp());
     }
 
     private void showForecast() {
-        heading("PV-Prognose");
+        pageHeader("PV-Prognose", "Wetterbasierte Solarprognose für die nächsten Tage");
+
         if (forecast.isEmpty()) {
-            body(forecastError.isEmpty()
-                    ? "Noch keine Forecast-Daten. Standort, kWp, Dachneigung und Azimut in Einstellungen hinterlegen."
-                    : forecastError);
-        } else {
-            for (ForecastClient.Day d : forecast) {
-                StringBuilder s = new StringBuilder();
-                s.append(String.format(Locale.GERMANY, "%.1f kWh", d.energyKwh));
-                if (d.minC != null && d.maxC != null) {
-                    s.append(String.format(Locale.GERMANY, "\n%.0f–%.0f °C", d.minC, d.maxC));
-                }
-                if (d.weatherCode != null) s.append("\nWettercode ").append(d.weatherCode);
-                card(d.date, s.toString());
-            }
+            emptyState("Forecast noch nicht bereit",
+                    forecastError.isEmpty()
+                            ? "Hinterlege Standort, kWp, Dachneigung und Azimut in den Einstellungen."
+                            : forecastError,
+                    "Forecast einrichten",
+                    v -> showTab("Einstellungen"));
+            return;
         }
-        Button b = button("Forecast aktualisieren");
+
+        ForecastClient.Day tomorrow = forecast.size() > 1 ? forecast.get(1) : forecast.get(0);
+        LinearLayout hero = UiKit.card(this);
+        hero.setBackground(UiKit.outlined(this, UiKit.AMBER_SOFT, Color.rgb(245, 222, 158), 22));
+
+        LinearLayout heroTop = UiKit.row(this);
+        TextView weather = UiKit.text(this, weatherIcon(tomorrow.weatherCode), 40, UiKit.INK);
+        heroTop.addView(weather, new LinearLayout.LayoutParams(dp(58), -2));
+
+        LinearLayout heroText = new LinearLayout(this);
+        heroText.setOrientation(LinearLayout.VERTICAL);
+        heroText.addView(UiKit.overline(this, "MORGEN", UiKit.AMBER));
+        TextView amount = UiKit.text(this,
+                String.format(Locale.GERMANY, "%.1f kWh", tomorrow.energyKwh),
+                31, UiKit.INK);
+        amount.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        amount.setPadding(0, dp(3), 0, dp(1));
+        heroText.addView(amount);
+        String temp = tomorrow.minC != null && tomorrow.maxC != null
+                ? String.format(Locale.GERMANY, "%.0f bis %.0f °C", tomorrow.minC, tomorrow.maxC)
+                : "Temperatur —";
+        heroText.addView(UiKit.caption(this, temp));
+        heroTop.addView(heroText, new LinearLayout.LayoutParams(0, -2, 1f));
+        hero.addView(heroTop);
+        content.addView(hero);
+
+        content.addView(UiKit.sectionTitle(this, "4-Tage-Ausblick"));
+        LinearLayout list = UiKit.card(this);
+        double max = 1;
+        for (ForecastClient.Day d : forecast) max = Math.max(max, d.energyKwh);
+        int count = Math.min(4, forecast.size());
+        for (int i = 0; i < count; i++) {
+            ForecastClient.Day d = forecast.get(i);
+            LinearLayout row = UiKit.row(this);
+            row.setPadding(0, dp(8), 0, dp(8));
+
+            TextView icon = UiKit.text(this, weatherIcon(d.weatherCode), 26, UiKit.INK);
+            icon.setGravity(Gravity.CENTER);
+            row.addView(icon, new LinearLayout.LayoutParams(dp(46), -1));
+
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            TextView date = UiKit.text(this, friendlyDate(d.date), 14, UiKit.INK);
+            date.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            labels.addView(date);
+
+            String temps = d.minC != null && d.maxC != null
+                    ? String.format(Locale.GERMANY, "%.0f–%.0f °C", d.minC, d.maxC)
+                    : "—";
+            labels.addView(UiKit.text(this, temps, 12, UiKit.MUTED));
+            row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+
+            TextView kwh = UiKit.text(this,
+                    String.format(Locale.GERMANY, "%.1f kWh", d.energyKwh),
+                    15, UiKit.GREEN_DARK);
+            kwh.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            row.addView(kwh);
+            list.addView(row);
+
+            ProgressBar p = UiKit.progress(this, 100,
+                    (int)Math.round(d.energyKwh / max * 100.0), UiKit.AMBER);
+            LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, dp(5));
+            pp.setMargins(dp(46), 0, 0, dp(5));
+            list.addView(p, pp);
+
+            if (i < count - 1) list.addView(UiKit.divider(this), dividerLp());
+        }
+        content.addView(list);
+
+        Button b = UiKit.secondaryButton(this, "Prognose aktualisieren");
         b.setOnClickListener(v -> refreshPvForecast(false));
-        body("Quelle: Open-Meteo Global Tilted Irradiance. Azimut: Ost −90°, Süd 0°, West +90°.");
+        content.addView(b, buttonLp());
+
+        TextView source = UiKit.caption(this,
+                "Quelle: Open-Meteo · Global Tilted Irradiance. Die Prognose berücksichtigt die in der App eingestellte Dachneigung, Ausrichtung und Anlagenleistung.");
+        source.setPadding(dp(4), dp(4), dp(4), dp(10));
+        content.addView(source);
     }
 
     private void showOctopus() {
-        heading("Octopus Energy");
+        pageHeader("Octopus Energy", "Tarif, Smart-Meter-Netzbezug und Kosten");
 
-        card("API-Umstellung ab 21.09.2026",
-                "E-Mail/Passwort wird in dieser App nicht mehr verwendet. Unterstützt werden die von Kraken weiterhin dokumentierten Wege API-Key oder Refresh Token. Beide werden lokal im Android Keystore verschlüsselt gespeichert.");
+        boolean cheap = isCheapNow();
+        double price = currentTariffPrice();
+
+        LinearLayout tariff = new LinearLayout(this);
+        tariff.setOrientation(LinearLayout.VERTICAL);
+        tariff.setPadding(dp(20), dp(18), dp(20), dp(18));
+        tariff.setBackground(UiKit.outlined(this,
+                cheap ? UiKit.PURPLE_SOFT : UiKit.CARD,
+                cheap ? Color.rgb(212, 194, 243) : UiKit.LINE, 22));
+
+        LinearLayout tariffHead = UiKit.row(this);
+        tariffHead.addView(UiKit.overline(this, "OCTOPUS GO", UiKit.PURPLE),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        tariffHead.addView(UiKit.pill(this,
+                cheap ? "GÜNSTIG AKTIV" : "NORMAL",
+                cheap ? UiKit.PURPLE : UiKit.MUTED,
+                cheap ? Color.rgb(230, 218, 249) : Color.rgb(238, 241, 240)));
+        tariff.addView(tariffHead);
+
+        TextView priceView = UiKit.text(this,
+                String.format(Locale.GERMANY, "%.0f ct/kWh", price),
+                34, UiKit.INK);
+        priceView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        priceView.setPadding(0, dp(9), 0, dp(3));
+        tariff.addView(priceView);
+        tariff.addView(UiKit.caption(this,
+                "Günstig " + prefs.get("cheap_start", "00:00") + "–"
+                        + prefs.get("cheap_end", "05:00") + " · "
+                        + prefs.get("cheap_price", "19") + " ct/kWh"));
+        content.addView(tariff);
 
         if (octopus != null) {
-            String s = String.format(Locale.GERMANY,
-                    "Authentifiziert: ja\nNetzbezug: %.2f kWh\nGünstig: %.2f kWh\nNormal: %.2f kWh\nGeschätzte Energiekosten: %.2f €\n%s",
-                    octopus.totalKwh, octopus.cheapKwh, octopus.normalKwh,
-                    octopus.estimatedCostEuro, octopus.note);
-            card("Smart-Meter", s);
-        } else if (!octopusError.isEmpty()) {
-            card("Octopus", octopusError);
+            content.addView(UiKit.sectionTitle(this, "Smart-Meter"));
+            LinearLayout r1 = UiKit.row(this);
+            r1.addView(metric("NETZBEZUG",
+                    String.format(Locale.GERMANY, "%.2f kWh", octopus.totalKwh),
+                    "letzte geladene Intervalle",
+                    UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(true));
+            r1.addView(metric("KOSTEN",
+                    String.format(Locale.GERMANY, "%.2f €", octopus.estimatedCostEuro),
+                    "geschätzt aus Go-Tarif",
+                    UiKit.GREEN, UiKit.MINT), metricLp(false));
+            content.addView(r1);
+
+            LinearLayout r2 = UiKit.row(this);
+            r2.addView(metric("GÜNSTIG",
+                    String.format(Locale.GERMANY, "%.2f kWh", octopus.cheapKwh),
+                    prefs.get("cheap_start", "00:00") + "–" + prefs.get("cheap_end", "05:00"),
+                    UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(true));
+            r2.addView(metric("NORMAL",
+                    String.format(Locale.GERMANY, "%.2f kWh", octopus.normalKwh),
+                    "außerhalb des Fensters",
+                    UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
+            content.addView(r2);
+
+            LinearLayout note = UiKit.card(this);
+            note.addView(UiKit.overline(this, "STATUS", UiKit.GREEN));
+            TextView n = UiKit.caption(this, octopus.note);
+            n.setPadding(0, dp(6), 0, 0);
+            note.addView(n);
+            content.addView(note);
         } else {
-            body("Kundennummer plus API-Key oder Refresh Token unter Einstellungen eintragen.");
+            LinearLayout connect = UiKit.card(this);
+            connect.addView(UiKit.overline(this, "VERBINDUNG", UiKit.PURPLE));
+            TextView h = UiKit.text(this,
+                    octopusError.isEmpty() ? "Noch nicht verbunden" : "Verbindung fehlgeschlagen",
+                    19, UiKit.INK);
+            h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            h.setPadding(0, dp(7), 0, dp(5));
+            connect.addView(h);
+            connect.addView(UiKit.caption(this,
+                    octopusError.isEmpty()
+                            ? "Hinterlege Kundennummer plus API-Key oder Refresh Token in den Einstellungen."
+                            : octopusError));
+            content.addView(connect);
         }
 
-        Button b = button("Octopus testen & Netzverbrauch laden");
-        b.setOnClickListener(v -> refreshOctopus());
+        Button test = UiKit.primaryButton(this, "Octopus verbinden & Daten laden");
+        test.setOnClickListener(v -> refreshOctopus());
+        content.addView(test, buttonLp());
 
-        Button docs = button("Offizielle Kraken API-Doku öffnen");
+        Button docs = UiKit.secondaryButton(this, "Kraken API-Dokumentation");
         docs.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW,
                 Uri.parse("https://developer.oeg-kraken.energy/"))));
+        content.addView(docs, buttonLp());
 
-        body("Dein Go-Tarif wird lokal mit dem eingestellten günstigen Zeitfenster berechnet. Die Smart-Meter-Werte von Octopus können zeitverzögert eintreffen.");
+        TextView apiNote = UiKit.caption(this,
+                "Die App verwendet keinen E-Mail/Passwort-Login. API-Key und Refresh Token werden verschlüsselt im Android Keystore gespeichert. Smart-Meter-Werte können bei Octopus zeitverzögert eintreffen.");
+        apiNote.setPadding(dp(4), dp(4), dp(4), dp(10));
+        content.addView(apiNote);
     }
 
-    private void showAutomation() {
-        heading("Automatik / Raspberry");
+    private void showSystem() {
+        pageHeader("System & Automatik", "Raspberry, Batterie, Wärmepumpe und EV");
 
-        card("Zielbild",
-                "MPI10K + ICC/MQTT + Batterie + PV-Forecast + Octopus + Panasonic Aquarea/Intesis + später EV-Lader. Der Raspberry trifft die Entscheidungen; die Android-App ist Anzeige, Konfiguration und manueller Override.");
+        boolean piConfigured = !prefs.get("controller_url", "").isEmpty();
+        LinearLayout controller = UiKit.card(this);
+        LinearLayout top = UiKit.row(this);
+        top.addView(UiKit.overline(this, "RASPBERRY CONTROLLER", UiKit.GREEN),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        top.addView(UiKit.pill(this,
+                piConfigured ? "VORBEREITET" : "OFFLINE",
+                piConfigured ? UiKit.GREEN_DARK : UiKit.MUTED,
+                piConfigured ? UiKit.MINT : Color.rgb(238, 241, 240)));
+        controller.addView(top);
 
-        String url = prefs.get("controller_url", "");
-        if (url.isEmpty()) {
-            body("Noch kein Raspberry-Controller eingetragen.");
-        } else {
-            body("Controller: " + url);
-        }
+        TextView cTitle = UiKit.text(this,
+                piConfigured ? "Controller-Adresse hinterlegt" : "Noch kein Pi verbunden",
+                19, UiKit.INK);
+        cTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        cTitle.setPadding(0, dp(8), 0, dp(4));
+        controller.addView(cTitle);
+        controller.addView(UiKit.caption(this,
+                piConfigured
+                        ? prefs.get("controller_url", "")
+                        : "Der Pi übernimmt später die echte Regelung. Die App bleibt Dashboard und Bedienoberfläche."));
+        content.addView(controller);
 
-        String cfg = String.format(Locale.GERMANY,
-                "Batterie: %s kWh\nAC-Laden normal: %s A\nAbsolute Grenze: %s A\nReserve-SOC: %s %%\nAquarea/FBH: %s\nEV-Lader: %s",
-                prefs.get("battery_kwh", "70"),
-                prefs.get("charge_soft_a", "60"),
-                prefs.get("charge_hard_a", "70"),
-                prefs.get("reserve_soc", "20"),
-                prefs.getBool("heatpump_enabled", true) ? "vorbereitet" : "aus",
-                prefs.getBool("ev_enabled", false) ? "vorbereitet" : "aus");
-        card("Regelgrenzen", cfg);
+        content.addView(UiKit.sectionTitle(this, "Batterie-Regeln"));
+        LinearLayout rules = UiKit.row(this);
+        rules.addView(metric("NORMAL",
+                prefs.get("charge_soft_a", "60") + " A",
+                "AC-Ladestrom",
+                UiKit.GREEN, UiKit.MINT), metricLp(true));
+        rules.addView(metric("HARD LIMIT",
+                prefs.get("charge_hard_a", "70") + " A",
+                "niemals überschreiten",
+                UiKit.RED, UiKit.RED_SOFT), metricLp(false));
+        content.addView(rules);
+
+        LinearLayout reserve = UiKit.card(this);
+        reserve.addView(UiKit.overline(this, "RESERVE-SOC", UiKit.BLUE));
+        TextView rv = UiKit.value(this, prefs.get("reserve_soc", "20") + " %", UiKit.INK);
+        rv.setPadding(0, dp(6), 0, dp(2));
+        reserve.addView(rv);
+        reserve.addView(UiKit.caption(this,
+                "70-kWh-System · Ziel-SOC wird später aus Last, PV-Prognose und günstiger Octopus-Zeit berechnet."));
+        content.addView(reserve);
+
+        content.addView(UiKit.sectionTitle(this, "Flexible Verbraucher"));
+        LinearLayout devices = UiKit.card(this);
+        devices.addView(deviceLine("Panasonic Aquarea G", "Fußbodenheizung über Intesis / AC Cloud",
+                prefs.getBool("heatpump_enabled", true), "FBH"));
+        devices.addView(UiKit.divider(this), dividerLp());
+        devices.addView(deviceLine("Chevy Volt", "3,7-kW-Lader / Nachtladung vorbereitet",
+                prefs.getBool("ev_enabled", false), "EV"));
+        content.addView(devices);
 
         String vacation = prefs.get("vacation_return", "");
-        card("Urlaubsmodus",
-                vacation.isEmpty()
-                        ? "Aus. In Einstellungen kann eine Rückkehrzeit hinterlegt werden. Der spätere Pi-Controller heizt die FBH rechtzeitig vor der Rückkehr wieder an."
-                        : "Rückkehr: " + vacation + "\nDie Vorheizzeit wird später anhand Außentemperatur/PV-Prognose optimiert.");
+        LinearLayout holiday = UiKit.card(this);
+        holiday.addView(UiKit.overline(this, "URLAUBSMODUS", UiKit.AMBER));
+        TextView ht = UiKit.text(this,
+                vacation.isEmpty() ? "Zurzeit aus" : "Rückkehr " + vacation,
+                19, UiKit.INK);
+        ht.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        ht.setPadding(0, dp(7), 0, dp(4));
+        holiday.addView(ht);
+        holiday.addView(UiKit.caption(this,
+                "Die FBH soll später vor deiner Rückkehr automatisch wieder hochfahren — bevorzugt mit PV oder günstigem Strom."));
+        content.addView(holiday);
 
-        Button check = button("Raspberry-Controller prüfen");
-        check.setOnClickListener(v -> checkController());
+        Button test = UiKit.primaryButton(this, "Raspberry-Verbindung prüfen");
+        test.setOnClickListener(v -> checkController());
+        content.addView(test, buttonLp());
 
-        body("Wichtig: Diese Clean-Version schreibt noch keine MPI10K-Befehle. Erst kommt ein read-only Dry-Run auf dem Pi; Nulleinspeisung und BMS-Schutzgrenzen werden nie automatisch verändert.");
+        Button settings = UiKit.secondaryButton(this, "Automatik konfigurieren");
+        settings.setOnClickListener(v -> showTab("Einstellungen"));
+        content.addView(settings, buttonLp());
+
+        LinearLayout safety = UiKit.card(this);
+        safety.addView(UiKit.overline(this, "SICHERHEIT", UiKit.RED));
+        TextView st = UiKit.caption(this,
+                "Die App schreibt noch keine MPI10K-Befehle. Vor echter Steuerung läuft der Raspberry mehrere Tage im Read-only/Dry-run. Nulleinspeisung sowie BMS- und Wechselrichter-Schutzgrenzen werden nicht automatisch verändert.");
+        st.setPadding(0, dp(6), 0, 0);
+        safety.addView(st);
+        content.addView(safety);
+    }
+
+    private View deviceLine(String title, String detail, boolean enabled, String tag) {
+        LinearLayout row = UiKit.row(this);
+        row.setPadding(0, dp(5), 0, dp(5));
+
+        TextView badge = UiKit.pill(this, tag,
+                enabled ? UiKit.GREEN_DARK : UiKit.MUTED,
+                enabled ? UiKit.MINT : Color.rgb(238, 241, 240));
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(48), dp(32));
+        bp.setMargins(0, 0, dp(12), 0);
+        row.addView(badge, bp);
+
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        TextView t = UiKit.text(this, title, 15, UiKit.INK);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        labels.addView(t);
+        labels.addView(UiKit.text(this, detail, 12, UiKit.MUTED));
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        row.addView(UiKit.pill(this,
+                enabled ? "AN" : "AUS",
+                enabled ? UiKit.GREEN_DARK : UiKit.MUTED,
+                enabled ? UiKit.MINT : Color.rgb(238, 241, 240)));
+        return row;
     }
 
     private void showSettings() {
-        heading("Einstellungen");
+        pageHeader("Einstellungen", "Verbindungen und Automatik zentral konfigurieren");
 
-        subheading("PVOutput");
-        EditText pvSystem = field("System-ID", prefs.get("pv_system", ""), false);
-        EditText pvKey = field("API-Key", prefs.getSecret("pv_key"), true);
+        LinearLayout pvCard = settingsCard("PVOutput", "Erzeugung und historische PV-Daten");
+        EditText pvSystem = addField(pvCard, "System-ID", prefs.get("pv_system", ""), false);
+        EditText pvKey = addField(pvCard, "API-Key", prefs.getSecret("pv_key"), true);
+        content.addView(pvCard);
 
-        subheading("PV-Forecast");
-        EditText lat = field("Breitengrad", prefs.get("lat", ""), false);
-        EditText lon = field("Längengrad", prefs.get("lon", ""), false);
-        EditText kwp = field("Anlagengröße kWp", prefs.get("kwp", ""), false);
-        EditText tilt = field("Dachneigung °", prefs.get("tilt", "30"), false);
-        EditText az = field("Azimut (Ost -90 / Süd 0 / West +90)", prefs.get("azimuth", "0"), false);
-        EditText pr = field("Systemfaktor 0–1", prefs.get("pr", "0.85"), false);
+        LinearLayout forecastCard = settingsCard("PV-Forecast", "Standort und Dachparameter");
+        EditText lat = addField(forecastCard, "Breitengrad", prefs.get("lat", ""), false);
+        EditText lon = addField(forecastCard, "Längengrad", prefs.get("lon", ""), false);
+        EditText kwp = addField(forecastCard, "Anlagengröße kWp", prefs.get("kwp", ""), false);
+        EditText tilt = addField(forecastCard, "Dachneigung °", prefs.get("tilt", "30"), false);
+        EditText az = addField(forecastCard, "Azimut · Ost −90 / Süd 0 / West +90", prefs.get("azimuth", "0"), false);
+        EditText pr = addField(forecastCard, "Systemfaktor · z. B. 0.85", prefs.get("pr", "0.85"), false);
+        content.addView(forecastCard);
 
-        subheading("Octopus Energy");
-        body("Seit 21.09.2026 verwenden wir keinen E-Mail/Passwort-Login mehr.");
-        EditText octAccount = field("Kundennummer", prefs.get("oct_account", ""), false);
-        EditText octKey = field("Kraken API-Key (optional)", prefs.getSecret("oct_api_key"), true);
-        EditText octRefresh = field("Refresh Token (optional)", prefs.getSecret("oct_refresh"), true);
-        EditText cheapStart = field("Günstig ab HH:mm", prefs.get("cheap_start", "00:00"), false);
-        EditText cheapEnd = field("Günstig bis HH:mm", prefs.get("cheap_end", "05:00"), false);
-        EditText cheapPrice = field("Günstiger Preis ct/kWh", prefs.get("cheap_price", "19"), false);
-        EditText normalPrice = field("Normalpreis ct/kWh", prefs.get("normal_price", "29"), false);
+        LinearLayout octCard = settingsCard("Octopus Energy", "API-Key / Refresh Token und Go-Tarif");
+        TextView octNote = UiKit.caption(this,
+                "Kein E-Mail/Passwort-Login. API-Key oder Refresh Token genügt.");
+        octNote.setPadding(0, 0, 0, dp(8));
+        octCard.addView(octNote);
+        EditText octAccount = addField(octCard, "Kundennummer", prefs.get("oct_account", ""), false);
+        EditText octKey = addField(octCard, "Kraken API-Key · optional", prefs.getSecret("oct_api_key"), true);
+        EditText octRefresh = addField(octCard, "Refresh Token · optional", prefs.getSecret("oct_refresh"), true);
+        EditText cheapStart = addField(octCard, "Günstig ab HH:mm", prefs.get("cheap_start", "00:00"), false);
+        EditText cheapEnd = addField(octCard, "Günstig bis HH:mm", prefs.get("cheap_end", "05:00"), false);
+        EditText cheapPrice = addField(octCard, "Günstiger Preis ct/kWh", prefs.get("cheap_price", "19"), false);
+        EditText normalPrice = addField(octCard, "Normalpreis ct/kWh", prefs.get("normal_price", "29"), false);
+        content.addView(octCard);
 
-        subheading("Raspberry / Automatik");
-        EditText controllerUrl = field("Controller URL, z.B. http://192.168.1.50:8787", prefs.get("controller_url", ""), false);
-        EditText controllerToken = field("Controller Token", prefs.getSecret("controller_token"), true);
-        EditText battery = field("Batterie kWh", prefs.get("battery_kwh", "70"), false);
-        EditText softA = field("Ladestrom normal A", prefs.get("charge_soft_a", "60"), false);
-        EditText hardA = field("Ladestrom absolute Grenze A", prefs.get("charge_hard_a", "70"), false);
-        EditText reserve = field("Reserve-SOC %", prefs.get("reserve_soc", "20"), false);
-        EditText vacationReturn = field("Urlaubs-Rückkehr YYYY-MM-DD HH:mm", prefs.get("vacation_return", ""), false);
+        LinearLayout autoCard = settingsCard("Raspberry & Automatik", "Energiecontroller und Sicherheitsgrenzen");
+        EditText controllerUrl = addField(autoCard,
+                "Controller URL · z. B. http://192.168.1.50:8787",
+                prefs.get("controller_url", ""), false);
+        EditText controllerToken = addField(autoCard, "Controller Token",
+                prefs.getSecret("controller_token"), true);
+        EditText battery = addField(autoCard, "Batterie kWh", prefs.get("battery_kwh", "70"), false);
+        EditText softA = addField(autoCard, "Ladestrom normal A", prefs.get("charge_soft_a", "60"), false);
+        EditText hardA = addField(autoCard, "Absolute Grenze A", prefs.get("charge_hard_a", "70"), false);
+        EditText reserveSoc = addField(autoCard, "Reserve-SOC %", prefs.get("reserve_soc", "20"), false);
+        EditText vacationReturn = addField(autoCard,
+                "Urlaubs-Rückkehr · YYYY-MM-DD HH:mm",
+                prefs.get("vacation_return", ""), false);
 
         CheckBox heatpump = new CheckBox(this);
-        heatpump.setText("Panasonic Aquarea / FBH in Automatik vorbereiten");
+        heatpump.setText("Panasonic Aquarea / FBH berücksichtigen");
+        heatpump.setTextColor(UiKit.INK);
         heatpump.setChecked(prefs.getBool("heatpump_enabled", true));
-        content.addView(heatpump);
+        heatpump.setPadding(0, dp(5), 0, dp(4));
+        autoCard.addView(heatpump);
 
         CheckBox ev = new CheckBox(this);
-        ev.setText("EV-Lader in Automatik vorbereiten");
+        ev.setText("EV-Lader berücksichtigen");
+        ev.setTextColor(UiKit.INK);
         ev.setChecked(prefs.getBool("ev_enabled", false));
-        content.addView(ev);
+        ev.setPadding(0, 0, 0, dp(4));
+        autoCard.addView(ev);
+        content.addView(autoCard);
 
-        Button save = button("Speichern");
+        Button save = UiKit.primaryButton(this, "Einstellungen speichern");
         save.setOnClickListener(v -> {
             prefs.put("pv_system", pvSystem.getText().toString());
             prefs.putSecret("pv_key", pvKey.getText().toString());
@@ -342,7 +873,7 @@ public final class MainActivity extends Activity {
             prefs.put("battery_kwh", battery.getText().toString());
             prefs.put("charge_soft_a", softA.getText().toString());
             prefs.put("charge_hard_a", hardA.getText().toString());
-            prefs.put("reserve_soc", reserve.getText().toString());
+            prefs.put("reserve_soc", reserveSoc.getText().toString());
             prefs.put("vacation_return", vacationReturn.getText().toString());
             prefs.putBool("heatpump_enabled", heatpump.isChecked());
             prefs.putBool("ev_enabled", ev.isChecked());
@@ -352,9 +883,65 @@ public final class MainActivity extends Activity {
             forecast = Collections.emptyList();
             octopus = null;
             refreshPvForecast(false);
+            if (!prefs.get("oct_account", "").isEmpty()
+                    && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
+                refreshOctopus();
+            }
+            showTab("Home");
         });
+        content.addView(save, buttonLp());
 
-        body("API-Schlüssel und Tokens werden verschlüsselt im Android Keystore abgelegt und nicht in GitHub gespeichert.");
+        TextView secure = UiKit.caption(this,
+                "API-Schlüssel, Refresh Tokens und Controller Token werden verschlüsselt im Android Keystore gespeichert und nie in GitHub geschrieben.");
+        secure.setPadding(dp(4), dp(4), dp(4), dp(12));
+        content.addView(secure);
+    }
+
+    private LinearLayout settingsCard(String title, String subtitle) {
+        LinearLayout box = UiKit.card(this);
+        TextView h = UiKit.text(this, title, 18, UiKit.INK);
+        h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        box.addView(h);
+        TextView sub = UiKit.caption(this, subtitle);
+        sub.setPadding(0, dp(3), 0, dp(11));
+        box.addView(sub);
+        return box;
+    }
+
+    private EditText addField(LinearLayout parent, String hint, String value, boolean secret) {
+        EditText e = UiKit.input(this, hint, value, secret);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(52));
+        lp.setMargins(0, 0, 0, dp(9));
+        parent.addView(e, lp);
+        return e;
+    }
+
+    private void pageHeader(String title, String subtitle) {
+        content.addView(UiKit.pageTitle(this, title));
+        content.addView(UiKit.pageSubtitle(this, subtitle));
+    }
+
+    private void emptyState(String title, String text, String buttonText, View.OnClickListener listener) {
+        LinearLayout card = UiKit.card(this);
+        TextView h = UiKit.text(this, title, 20, UiKit.INK);
+        h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        card.addView(h);
+        TextView t = UiKit.caption(this, text);
+        t.setPadding(0, dp(6), 0, dp(12));
+        card.addView(t);
+        Button b = UiKit.primaryButton(this, buttonText);
+        b.setOnClickListener(listener);
+        card.addView(b, new LinearLayout.LayoutParams(-1, dp(48)));
+        content.addView(card);
+    }
+
+    private void refreshAll() {
+        Toast.makeText(this, "Daten werden aktualisiert …", Toast.LENGTH_SHORT).show();
+        refreshPvForecast(true);
+        if (!prefs.get("oct_account", "").isEmpty()
+                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
+            refreshOctopus();
+        }
     }
 
     private void refreshPvForecast(boolean forceLive) {
@@ -401,6 +988,7 @@ public final class MainActivity extends Activity {
                 pvError = finalPvError;
                 forecastError = finalForecastError;
                 updateWidgetCache();
+                updateHeaderStatus();
                 showTab(currentTab);
             });
         });
@@ -424,13 +1012,14 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     octopus = s;
                     octopusError = "";
-                    if ("Octopus".equals(currentTab) || "Übersicht".equals(currentTab)) showTab(currentTab);
+                    updateHeaderStatus();
+                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab)) showTab(currentTab);
                 });
             } catch (Exception e) {
                 String err = cleanError(e);
                 runOnUiThread(() -> {
                     octopusError = err;
-                    if ("Octopus".equals(currentTab) || "Übersicht".equals(currentTab)) showTab(currentTab);
+                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab)) showTab(currentTab);
                 });
             }
         });
@@ -446,15 +1035,26 @@ public final class MainActivity extends Activity {
         String url = base + "/api/status";
         String token = prefs.getSecret("controller_token");
         final String finalUrl = url;
+
         io.execute(() -> {
             try {
                 java.util.Map<String,String> h = new java.util.HashMap<>();
                 if (!token.isEmpty()) h.put("Authorization", "Bearer " + token);
                 Net.Response r = Net.get(finalUrl, h);
-                String result = "HTTP " + r.code + "\n" + (r.body.length() > 1200 ? r.body.substring(0,1200) : r.body);
-                runOnUiThread(() -> card("Controller-Antwort", result));
+                String result = "HTTP " + r.code + "\n"
+                        + (r.body.length() > 800 ? r.body.substring(0,800) : r.body);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Controller antwortet: HTTP " + r.code, Toast.LENGTH_LONG).show();
+                    LinearLayout c = UiKit.card(this);
+                    c.addView(UiKit.overline(this, "CONTROLLER-ANTWORT", UiKit.GREEN));
+                    TextView t = UiKit.caption(this, result);
+                    t.setPadding(0, dp(6), 0, 0);
+                    c.addView(t);
+                    content.addView(c, Math.min(1, content.getChildCount()));
+                });
             } catch (Exception e) {
-                runOnUiThread(() -> card("Controller-Fehler", cleanError(e)));
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Controller: " + cleanError(e), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -467,96 +1067,86 @@ public final class MainActivity extends Activity {
         if (forecast.size() > 1) {
             prefs.put("widget_tomorrow_kwh", Double.toString(forecast.get(1).energyKwh));
         }
-        prefs.put("widget_stamp", "Stand " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM HH:mm")));
+        prefs.put("widget_stamp",
+                "Stand " + LocalDateTime.now(BERLIN).format(DateTimeFormatter.ofPattern("dd.MM HH:mm")));
         PvWidgetProvider.refreshAll(this);
     }
 
-    private void buttonRefreshPv() {
-        Button b = button("PVOutput aktualisieren");
-        b.setOnClickListener(v -> refreshPvForecast(true));
+    private void updateHeaderStatus() {
+        if (headerStatus == null) return;
+        String time = LocalTime.now(BERLIN).format(DateTimeFormatter.ofPattern("HH:mm"));
+        if (pv != null) headerStatus.setText("Daten aktualisiert · " + time);
+        else headerStatus.setText("Energie auf einen Blick");
     }
 
-    private TextView heading(String text) {
-        TextView v = new TextView(this);
-        v.setText(text);
-        v.setTextSize(24);
-        v.setTextColor(Color.rgb(20,20,20));
-        v.setPadding(0, dp(6), 0, dp(10));
-        content.addView(v);
-        return v;
+    private double currentTariffPrice() {
+        return isCheapNow()
+                ? parseDouble(prefs.get("cheap_price", "19"), 19)
+                : parseDouble(prefs.get("normal_price", "29"), 29);
     }
 
-    private TextView subheading(String text) {
-        TextView v = new TextView(this);
-        v.setText(text);
-        v.setTextSize(18);
-        v.setTextColor(Color.rgb(30,30,30));
-        v.setPadding(0, dp(16), 0, dp(6));
-        content.addView(v);
-        return v;
+    private boolean isCheapNow() {
+        LocalTime now = LocalTime.now(BERLIN);
+        LocalTime start = parseTime(prefs.get("cheap_start", "00:00"), LocalTime.MIDNIGHT);
+        LocalTime end = parseTime(prefs.get("cheap_end", "05:00"), LocalTime.of(5, 0));
+        if (start.equals(end)) return false;
+        if (start.isBefore(end)) return !now.isBefore(start) && now.isBefore(end);
+        return !now.isBefore(start) || now.isBefore(end);
     }
 
-    private TextView body(String text) {
-        TextView v = new TextView(this);
-        v.setText(text);
-        v.setTextSize(15);
-        v.setTextColor(Color.rgb(55,55,55));
-        v.setLineSpacing(0, 1.15f);
-        v.setPadding(dp(2), dp(4), dp(2), dp(8));
-        content.addView(v, new LinearLayout.LayoutParams(-1, -2));
-        return v;
+    private LocalTime parseTime(String value, LocalTime def) {
+        try { return LocalTime.parse(value); } catch (Exception e) { return def; }
     }
 
-    private void card(String title, String text) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(14), dp(12), dp(14), dp(12));
-        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-        bg.setColor(Color.WHITE);
-        bg.setCornerRadius(dp(12));
-        bg.setStroke(dp(1), Color.rgb(225,225,225));
-        box.setBackground(bg);
-
-        TextView h = new TextView(this);
-        h.setText(title);
-        h.setTextSize(17);
-        h.setTextColor(Color.rgb(25,25,25));
-        box.addView(h);
-
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(14);
-        t.setTextColor(Color.rgb(70,70,70));
-        t.setPadding(0, dp(6), 0, 0);
-        box.addView(t);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, dp(5), 0, dp(8));
-        content.addView(box, lp);
+    private String greeting() {
+        int h = LocalTime.now(BERLIN).getHour();
+        if (h < 11) return "Guten Morgen";
+        if (h < 18) return "Guten Tag";
+        return "Guten Abend";
     }
 
-    private Button button(String text) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setAllCaps(false);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(50));
-        lp.setMargins(0, dp(4), 0, dp(6));
-        content.addView(b, lp);
-        return b;
+    private String weatherIcon(Integer code) {
+        if (code == null) return "◌";
+        if (code == 0) return "☀";
+        if (code <= 3) return "⛅";
+        if (code == 45 || code == 48) return "≋";
+        if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return "☂";
+        if (code >= 71 && code <= 77) return "❄";
+        if (code >= 95) return "⚡";
+        return "☁";
     }
 
-    private EditText field(String hint, String value, boolean secret) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setText(value == null ? "" : value);
-        e.setSingleLine(true);
-        if (secret) {
-            e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        } else {
-            e.setInputType(InputType.TYPE_CLASS_TEXT);
+    private String friendlyDate(String iso) {
+        try {
+            LocalDate d = LocalDate.parse(iso);
+            String day = d.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.GERMANY);
+            return day + ", " + d.format(DateTimeFormatter.ofPattern("dd.MM."));
+        } catch (Exception e) {
+            return iso;
         }
-        content.addView(e, new LinearLayout.LayoutParams(-1, dp(56)));
-        return e;
+    }
+
+    private String shortDate(String date) {
+        try {
+            LocalDate d;
+            if (date.matches("\\d{8}")) d = LocalDate.parse(date, DateTimeFormatter.BASIC_ISO_DATE);
+            else d = LocalDate.parse(date);
+            return d.format(DateTimeFormatter.ofPattern("dd.MM."));
+        } catch (Exception e) {
+            return date;
+        }
+    }
+
+    private LinearLayout.LayoutParams dividerLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(1));
+        lp.setMargins(0, dp(7), 0, dp(7));
+        return lp;
+    }
+
+    private LinearLayout.LayoutParams buttonLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(50));
+        lp.setMargins(0, 0, 0, dp(10));
+        return lp;
     }
 
     private int parseInt(String s, int def) {
@@ -574,6 +1164,20 @@ public final class MainActivity extends Activity {
     }
 
     private int dp(int v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
+        return UiKit.dp(this, v);
+    }
+
+    private static final class NavItem {
+        final String tab;
+        final LinearLayout container;
+        final TextView icon;
+        final TextView label;
+
+        NavItem(String tab, LinearLayout container, TextView icon, TextView label) {
+            this.tab = tab;
+            this.container = container;
+            this.icon = icon;
+            this.label = label;
+        }
     }
 }
