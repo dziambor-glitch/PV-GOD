@@ -93,6 +93,6 @@ public final class ForecastClient {
     }
 
     private String enc(String x) {
-        return URLEncoder.encode(x, StandardCharsets.UTF_8);
+        try { return URLEncoder.encode(x, "UTF-8"); } catch (Exception e) { return x; }
     }
 }
