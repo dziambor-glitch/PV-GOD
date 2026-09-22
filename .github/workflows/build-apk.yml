@@ -22,7 +22,7 @@ jobs:
       - name: Android SDK einrichten
         uses: android-actions/setup-android@v3
 
-      - name: Projekt aus ZIP entpacken und v0.3 anwenden
+      - name: Projekt aus ZIP entpacken und v1.0 anwenden
         shell: bash
         run: |
           set -euo pipefail
@@ -49,14 +49,12 @@ jobs:
           echo "Projekt gefunden: $PROJECT_DIR"
 
           if [ -d overrides ]; then
-            echo "v0.3-Dateien werden eingespielt..."
+            echo "PV Compact 1.0 Dateien werden eingespielt..."
             cp -a overrides/. "$PROJECT_DIR/"
           fi
 
-          # MainActivity wird aus kleinen, verifizierten Teilen rekonstruiert.
-          # Die alte overrides_gz-Datei wird bewusst NICHT mehr verwendet.
           if compgen -G 'override_parts/MainActivity.part*' > /dev/null; then
-            echo "MainActivity wird rekonstruiert..."
+            echo "MainActivity 1.0 wird rekonstruiert..."
             cat override_parts/MainActivity.part* > /tmp/MainActivity.kt.gz.b64
             base64 -d /tmp/MainActivity.kt.gz.b64 > /tmp/MainActivity.kt.gz
             gzip -t /tmp/MainActivity.kt.gz
@@ -69,40 +67,10 @@ jobs:
             exit 1
           fi
 
-          # Einmaliger Octopus-Verbindungsdialog als zweiter Launcher-Eintrag.
-          # So muss die große MainActivity für diesen Übergangs-Login nicht erneut
-          # komprimiert/zerlegt werden. Nach erfolgreicher Anmeldung teilt er sich
-          # denselben verschlüsselten CredentialStore mit der Haupt-App.
-          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ] && ! grep -q 'OctopusConnectActivity' "$MANIFEST"; then
-            python3 - "$MANIFEST" <<'PY'
-          import sys
-          from pathlib import Path
-
-          manifest = Path(sys.argv[1])
-          text = manifest.read_text(encoding="utf-8")
-          activity = '''
-                  <activity
-                      android:name=".OctopusConnectActivity"
-                      android:exported="true"
-                      android:label="PVCompact · Octopus">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-          '''
-          if "</application>" not in text:
-              raise SystemExit("FEHLER: </application> im AndroidManifest nicht gefunden")
-          text = text.replace("</application>", activity + "    </application>", 1)
-          manifest.write_text(text, encoding="utf-8")
-          PY
-          fi
-
           BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          # Bewährte Build-Kombination vom erfolgreichen APK-Build #5.
+          # Bewährte CI-Kombination: AGP 9.1.1, API 36, Compose 1.11.
           sed -i 's/version "9.4.0"/version "9.1.1"/' "$PROJECT_DIR/build.gradle.kts"
           sed -E -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]+/compileSdk = 36/' "$BUILD_FILE"
           sed -i 's/androidx.compose:compose-bom:2026.08.00/androidx.compose:compose-bom:2026.04.01/' "$BUILD_FILE"
@@ -118,6 +86,13 @@ jobs:
 
           grep -q '^android.builtInKotlin=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.builtInKotlin=false' >> "$PROJECT_DIR/gradle.properties"
           grep -q '^android.newDsl=false$' "$PROJECT_DIR/gradle.properties" || echo 'android.newDsl=false' >> "$PROJECT_DIR/gradle.properties"
+
+          grep -q 'versionName = "1.0.0"' "$BUILD_FILE"
+          grep -q 'versionCode = 10' "$BUILD_FILE"
+          if grep -R -q 'OctopusConnectActivity' "$PROJECT_DIR/app/src/main"; then
+            echo "FEHLER: Legacy Octopus Passwort-Login ist noch enthalten."
+            exit 1
+          fi
 
       - name: Android 36 installieren
         shell: bash
@@ -139,6 +114,6 @@ jobs:
       - name: APK bereitstellen
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-v0.3-APK
+          name: PVCompact-v1.0.0-APK
           path: "**/app/build/outputs/apk/debug/app-debug.apk"
           if-no-files-found: error
