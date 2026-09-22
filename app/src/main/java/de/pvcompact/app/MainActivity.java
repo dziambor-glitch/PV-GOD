@@ -9,12 +9,14 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -852,10 +854,55 @@ public final class MainActivity extends Activity {
                 forecastStreet, forecastPostcode, forecastCity,
                 locationStatus, locationState, addressResolved, locationCoords, locate));
 
-        EditText kwp = addField(forecastCard, "Anlagengröße kWp", prefs.get("kwp", ""), false);
-        EditText tilt = addField(forecastCard, "Dachneigung °", prefs.get("tilt", "30"), false);
-        EditText az = addField(forecastCard, "Azimut · Ost −90 / Süd 0 / West +90", prefs.get("azimuth", "0"), false);
-        EditText pr = addField(forecastCard, "Systemfaktor · z. B. 0.85", prefs.get("pr", "0.85"), false);
+        TextView plantTitle = UiKit.text(this, "PV-Anlage", 16, UiKit.INK);
+        plantTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        plantTitle.setPadding(0, dp(6), 0, dp(10));
+        forecastCard.addView(plantTitle);
+
+        EditText kwp = addLabeledField(
+                forecastCard,
+                "Anlagengröße",
+                "Gesamtleistung deiner PV-Module in kWp, z. B. 15.0",
+                prefs.get("kwp", ""),
+                false);
+
+        EditText tilt = addLabeledField(
+                forecastCard,
+                "Dachneigung",
+                "In Grad: 0° = flach, typische Schrägdächer liegen etwa bei 25–45°.",
+                prefs.get("tilt", "30"),
+                false);
+
+        TextView orientationLabel = UiKit.text(this, "Dachausrichtung", 13, UiKit.INK);
+        orientationLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        forecastCard.addView(orientationLabel);
+
+        TextView orientationHelp = UiKit.caption(this,
+                "Einfach die Himmelsrichtung auswählen – keine Azimut-Zahl nötig.");
+        orientationHelp.setPadding(0, dp(2), 0, dp(5));
+        forecastCard.addView(orientationHelp);
+
+        Spinner orientation = new Spinner(this);
+        String[] orientationItems = {
+                "Süd", "Südost", "Südwest", "Ost",
+                "West", "Nordost", "Nordwest", "Nord"
+        };
+        ArrayAdapter<String> orientationAdapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_item, orientationItems);
+        orientationAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        orientation.setAdapter(orientationAdapter);
+        orientation.setSelection(orientationIndex(parseInt(prefs.get("azimuth", "0"), 0)));
+        orientation.setPadding(dp(10), 0, dp(10), 0);
+        orientation.setBackground(UiKit.outlined(this, Color.rgb(250, 252, 251), UiKit.LINE, 13));
+        LinearLayout.LayoutParams orientationLp = new LinearLayout.LayoutParams(-1, dp(52));
+        orientationLp.setMargins(0, 0, 0, dp(12));
+        forecastCard.addView(orientation, orientationLp);
+
+        TextView qualityNote = UiKit.caption(this,
+                "Den technischen Systemfaktor übernimmt PV Compact automatisch. Du musst dafür nichts einstellen.");
+        qualityNote.setPadding(dp(2), 0, dp(2), dp(4));
+        forecastCard.addView(qualityNote);
+
         content.addView(forecastCard);
 
         LinearLayout octCard = settingsCard("Octopus Energy", "API-Key / Refresh Token und Go-Tarif");
@@ -926,8 +973,8 @@ public final class MainActivity extends Activity {
             prefs.put("forecast_city", cityValue);
             prefs.put("kwp", kwp.getText().toString());
             prefs.put("tilt", tilt.getText().toString());
-            prefs.put("azimuth", az.getText().toString());
-            prefs.put("pr", pr.getText().toString());
+            prefs.put("azimuth", Integer.toString(orientationAzimuth(orientation.getSelectedItemPosition())));
+            if (prefs.get("pr", "").isEmpty()) prefs.put("pr", "0.85");
 
             prefs.put("oct_account", octAccount.getText().toString());
             prefs.putSecret("oct_api_key", octKey.getText().toString());
@@ -975,6 +1022,25 @@ public final class MainActivity extends Activity {
         sub.setPadding(0, dp(3), 0, dp(11));
         box.addView(sub);
         return box;
+    }
+
+    private EditText addLabeledField(LinearLayout parent, String label, String help,
+                                         String value, boolean secret) {
+        TextView l = UiKit.text(this, label, 13, UiKit.INK);
+        l.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        parent.addView(l);
+
+        if (help != null && !help.isEmpty()) {
+            TextView h = UiKit.caption(this, help);
+            h.setPadding(0, dp(2), 0, dp(5));
+            parent.addView(h);
+        }
+
+        EditText e = UiKit.input(this, "", value, secret);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(52));
+        lp.setMargins(0, 0, 0, dp(12));
+        parent.addView(e, lp);
+        return e;
     }
 
     private EditText addField(LinearLayout parent, String hint, String value, boolean secret) {
@@ -1277,6 +1343,30 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(50));
         lp.setMargins(0, 0, 0, dp(10));
         return lp;
+    }
+
+    private int orientationIndex(int azimuth) {
+        if (azimuth >= -23 && azimuth <= 23) return 0;      // Süd
+        if (azimuth < -23 && azimuth >= -68) return 1;     // Südost
+        if (azimuth > 23 && azimuth <= 68) return 2;       // Südwest
+        if (azimuth < -68 && azimuth >= -113) return 3;    // Ost
+        if (azimuth > 68 && azimuth <= 113) return 4;      // West
+        if (azimuth < -113 && azimuth >= -158) return 5;   // Nordost
+        if (azimuth > 113 && azimuth <= 158) return 6;     // Nordwest
+        return 7;                                           // Nord
+    }
+
+    private int orientationAzimuth(int position) {
+        switch (position) {
+            case 1: return -45;   // Südost
+            case 2: return 45;    // Südwest
+            case 3: return -90;   // Ost
+            case 4: return 90;    // West
+            case 5: return -135;  // Nordost
+            case 6: return 135;   // Nordwest
+            case 7: return 180;   // Nord
+            default: return 0;    // Süd
+        }
     }
 
     private int parseInt(String s, int def) {
