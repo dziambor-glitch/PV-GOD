@@ -1774,6 +1774,10 @@ public final class MainActivity extends Activity {
                 if (s.refreshedToken != null && !s.refreshedToken.isEmpty()) {
                     prefs.putSecret("oct_refresh", s.refreshedToken);
                 }
+                if (s.accountNumber != null && !s.accountNumber.isEmpty()
+                        && !s.accountNumber.equals(prefs.get("oct_account", ""))) {
+                    prefs.put("oct_account", s.accountNumber);
+                }
                 runOnUiThread(() -> {
                     octopus = s;
                     octopusError = "";
