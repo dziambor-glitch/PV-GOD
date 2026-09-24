@@ -533,8 +533,16 @@ public final class OctopusClient {
     }
 
     private void applyRecentTotalsFromHistory(Summary s) {
-        LocalDate today = LocalDate.now(BERLIN);
-        LocalDate from = today.minusDays(3);
+        LocalDate latest = null;
+        for (DailyUsage d : s.dailyHistory) {
+            try {
+                LocalDate date = LocalDate.parse(d.date);
+                if (latest == null || date.isAfter(latest)) latest = date;
+            } catch (Exception ignored) {}
+        }
+        if (latest == null) return;
+
+        LocalDate from = latest.minusDays(2);
         s.totalKwh = 0.0;
         s.cheapKwh = 0.0;
         s.normalKwh = 0.0;
@@ -543,11 +551,12 @@ public final class OctopusClient {
             LocalDate date;
             try { date = LocalDate.parse(d.date); }
             catch (Exception ignored) { continue; }
-            if (date.isBefore(from) || date.isAfter(today)) continue;
+            if (date.isBefore(from) || date.isAfter(latest)) continue;
             s.totalKwh += d.totalKwh;
             s.cheapKwh += d.cheapKwh;
             s.normalKwh += d.normalKwh;
         }
+        s.latestDate = latest.toString();
         s.measurementSource = "HOUR_INTERVAL history";
     }
 
