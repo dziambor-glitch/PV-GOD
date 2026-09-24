@@ -7,6 +7,7 @@ on:
       - pvcompact-clean-v1
       - main
       - octopus-direct-integration
+      - energy-statistics-dashboard
     paths:
       - "settings.gradle.kts"
       - "build.gradle.kts"
