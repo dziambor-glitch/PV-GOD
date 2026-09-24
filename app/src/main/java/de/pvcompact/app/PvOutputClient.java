@@ -40,6 +40,15 @@ public final class PvOutputClient {
         public Double peakPowerW;
     }
 
+    public static final class Month {
+        public String month = "";
+        public int days;
+        public double generatedWh;
+        public Double consumedWh;
+        public Double importedWh;
+        public Double exportedWh;
+    }
+
     public static final class Year {
         public int year;
         public int days;
@@ -53,6 +62,8 @@ public final class PvOutputClient {
         public Live live;
         public List<Point> history = Collections.emptyList();
         public List<Day> week = Collections.emptyList();
+        public List<Day> recentDays = Collections.emptyList();
+        public List<Month> months = Collections.emptyList();
         public List<Year> years = Collections.emptyList();
         public Integer rateRemaining;
     }
@@ -68,24 +79,35 @@ public final class PvOutputClient {
 
         Raw liveRaw = cached("getstatus.jsp", forceLive ? 0L : 2 * 60_000L);
         Live live = parseLive(liveRaw.body);
-
         Raw historyRaw = safeCached("getstatus.jsp?h=1&limit=288&asc=1&d=" + live.date, 15 * 60_000L);
 
         LocalDate today = LocalDate.parse(live.date, DateTimeFormatter.BASIC_ISO_DATE);
-        String from = today.minusDays(6).format(DateTimeFormatter.BASIC_ISO_DATE);
         String to = today.format(DateTimeFormatter.BASIC_ISO_DATE);
-        Raw weekRaw = safeCached("getoutput.jsp?df=" + from + "&dt=" + to + "&limit=7", 6 * 60 * 60_000L);
-        Raw yearsRaw = safeCached("getoutput.jsp?a=y&limit=15", 24 * 60 * 60_000L);
+        String weekFrom = today.minusDays(6).format(DateTimeFormatter.BASIC_ISO_DATE);
+        String recentFrom = today.minusDays(59).format(DateTimeFormatter.BASIC_ISO_DATE);
+
+        Raw weekRaw = safeCached("getoutput.jsp?df=" + weekFrom + "&dt=" + to + "&limit=7",
+                6 * 60 * 60_000L);
+        Raw recentRaw = safeCached("getoutput.jsp?df=" + recentFrom + "&dt=" + to + "&limit=60",
+                6 * 60 * 60_000L);
+        Raw monthsRaw = safeCached("getoutput.jsp?a=m&limit=24",
+                12 * 60 * 60_000L);
+        Raw yearsRaw = safeCached("getoutput.jsp?a=y&limit=15",
+                24 * 60 * 60_000L);
 
         Dashboard d = new Dashboard();
         d.live = live;
         d.history = historyRaw == null ? Collections.emptyList() : parseHistory(historyRaw.body);
-        d.week = weekRaw == null ? Collections.emptyList() : parseWeek(weekRaw.body);
+        d.week = weekRaw == null ? Collections.emptyList() : parseDays(weekRaw.body);
+        d.recentDays = recentRaw == null ? d.week : parseDays(recentRaw.body);
+        d.months = monthsRaw == null ? Collections.emptyList() : parseMonths(monthsRaw.body);
         d.years = yearsRaw == null ? Collections.emptyList() : parseYears(yearsRaw.body);
 
         Integer remaining = liveRaw.remaining;
         if (historyRaw != null && historyRaw.remaining != null) remaining = min(remaining, historyRaw.remaining);
         if (weekRaw != null && weekRaw.remaining != null) remaining = min(remaining, weekRaw.remaining);
+        if (recentRaw != null && recentRaw.remaining != null) remaining = min(remaining, recentRaw.remaining);
+        if (monthsRaw != null && monthsRaw.remaining != null) remaining = min(remaining, monthsRaw.remaining);
         if (yearsRaw != null && yearsRaw.remaining != null) remaining = min(remaining, yearsRaw.remaining);
         d.rateRemaining = remaining;
         return d;
@@ -111,11 +133,18 @@ public final class PvOutputClient {
     private static final class Raw {
         final String body;
         final Integer remaining;
-        Raw(String body, Integer remaining) { this.body = body; this.remaining = remaining; }
+        Raw(String body, Integer remaining) {
+            this.body = body;
+            this.remaining = remaining;
+        }
     }
 
     private Raw safeCached(String path, long ttl) {
-        try { return cached(path, ttl); } catch (Exception ignored) { return null; }
+        try {
+            return cached(path, ttl);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private Raw cached(String path, long ttl) throws Exception {
@@ -137,6 +166,7 @@ public final class PvOutputClient {
         if (r.code < 200 || r.code >= 300) {
             throw new IllegalStateException("PVOutput HTTP " + r.code + ": " + cut(r.body));
         }
+
         Integer remaining = null;
         try {
             String h = r.header("X-Rate-Limit-Remaining");
@@ -153,7 +183,10 @@ public final class PvOutputClient {
 
     private Live parseLive(String body) {
         String[] p = body.split(",", -1);
-        if (p.length < 4) throw new IllegalStateException("PVOutput Live-Antwort unvollständig");
+        if (p.length < 4) {
+            throw new IllegalStateException("PVOutput Live-Antwort unvollständig");
+        }
+
         Live v = new Live();
         v.date = p[0];
         v.time = p[1];
@@ -169,6 +202,7 @@ public final class PvOutputClient {
         for (String row : body.split(";")) {
             String[] p = row.trim().split(",", -1);
             if (p.length < 5) continue;
+
             Point x = new Point();
             x.time = p.length > 1 ? p[1] : "";
             x.energyWh = num(p, 2, 0);
@@ -179,11 +213,12 @@ public final class PvOutputClient {
         return out;
     }
 
-    private List<Day> parseWeek(String body) {
+    private List<Day> parseDays(String body) {
         List<Day> out = new ArrayList<>();
         for (String row : body.split(";")) {
             String[] p = row.trim().split(",", -1);
             if (p.length < 2 || p[0].isEmpty()) continue;
+
             Day d = new Day();
             d.date = p[0];
             d.generatedWh = num(p, 1, 0);
@@ -191,6 +226,36 @@ public final class PvOutputClient {
             d.peakPowerW = nullable(p, 5);
             out.add(d);
         }
+        out.sort((a, b) -> a.date.compareTo(b.date));
+        return out;
+    }
+
+    private List<Month> parseMonths(String body) {
+        List<Month> out = new ArrayList<>();
+        for (String row : body.split(";")) {
+            String[] p = row.trim().split(",", -1);
+            if (p.length < 3 || p[0].length() < 6) continue;
+
+            Month m = new Month();
+            m.month = p[0].substring(0, 6);
+            m.days = intAt(p, 1, 0);
+            m.generatedWh = num(p, 2, 0);
+            m.exportedWh = nullable(p, 4);
+            m.consumedWh = nullable(p, 5);
+
+            double imports = 0;
+            boolean any = false;
+            for (int i = 6; i <= 9 && i < p.length; i++) {
+                Double v = nullable(p, i);
+                if (v != null) {
+                    imports += v;
+                    any = true;
+                }
+            }
+            m.importedWh = any ? imports : null;
+            out.add(m);
+        }
+        out.sort((a, b) -> b.month.compareTo(a.month));
         return out;
     }
 
@@ -199,24 +264,30 @@ public final class PvOutputClient {
         for (String row : body.split(";")) {
             String[] p = row.trim().split(",", -1);
             if (p.length < 3 || p[0].length() < 4) continue;
+
             Integer y = intOrNull(p[0].substring(0, 4));
             if (y == null) continue;
+
             Year a = new Year();
             a.year = y;
             a.days = intAt(p, 1, 0);
             a.generatedWh = num(p, 2, 0);
             a.exportedWh = nullable(p, 4);
             a.consumedWh = nullable(p, 5);
+
             double imports = 0;
             boolean any = false;
             for (int i = 6; i <= 9 && i < p.length; i++) {
                 Double v = nullable(p, i);
-                if (v != null) { imports += v; any = true; }
+                if (v != null) {
+                    imports += v;
+                    any = true;
+                }
             }
             a.importedWh = any ? imports : null;
             out.add(a);
         }
-        out.sort((a,b) -> Integer.compare(b.year, a.year));
+        out.sort((a, b) -> Integer.compare(b.year, a.year));
         return out;
     }
 
@@ -229,16 +300,28 @@ public final class PvOutputClient {
         if (i < 0 || i >= p.length) return null;
         String s = p[i].trim();
         if (s.isEmpty() || "nan".equalsIgnoreCase(s)) return null;
-        try { return Double.parseDouble(s); } catch (Exception e) { return null; }
+        try {
+            return Double.parseDouble(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private int intAt(String[] p, int i, int def) {
         if (i < 0 || i >= p.length) return def;
-        try { return Integer.parseInt(p[i]); } catch (Exception e) { return def; }
+        try {
+            return Integer.parseInt(p[i]);
+        } catch (Exception e) {
+            return def;
+        }
     }
 
     private Integer intOrNull(String s) {
-        try { return Integer.parseInt(s); } catch (Exception e) { return null; }
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private String cut(String s) {
