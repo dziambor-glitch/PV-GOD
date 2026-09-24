@@ -6,6 +6,7 @@ on:
     branches:
       - pvcompact-clean-v1
       - main
+      - octopus-direct-integration
     paths:
       - "settings.gradle.kts"
       - "build.gradle.kts"
