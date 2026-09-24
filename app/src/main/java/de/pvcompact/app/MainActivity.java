@@ -879,7 +879,8 @@ public final class MainActivity extends Activity {
         }
 
         List<EnergyPeriod> months = monthlyEnergyPeriodsChronological();
-        EnergyPeriod overall = overallEnergyPeriod(months);
+        List<EnergyPeriod> allYears = yearlyEnergyPeriodsChronological();
+        EnergyPeriod overall = overallEnergyPeriod(allYears);
 
         content.addView(UiKit.sectionTitle(this, "Gesamt verfügbar"));
 
@@ -1783,7 +1784,7 @@ public final class MainActivity extends Activity {
                 String err = cleanError(e);
                 runOnUiThread(() -> {
                     octopusError = err;
-                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
+                    if ("Octopus".equals(currentTab) || "Statistik".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
                 });
             }
         });
