@@ -804,7 +804,7 @@ public final class MainActivity extends Activity {
         content.addView(docs, buttonLp());
 
         TextView apiNote = UiKit.caption(this,
-                "Die App verwendet keinen E-Mail/Passwort-Login. API-Key und Refresh Token werden verschlüsselt im Android Keystore gespeichert. Smart-Meter-Werte können bei Octopus zeitverzögert eintreffen.");
+                "E-Mail + Passwort werden nur für die erstmalige Anmeldung verwendet und nicht gespeichert. Der danach von Octopus gelieferte Refresh Token wird verschlüsselt im Android Keystore gespeichert. Smart-Meter-Werte können bei Octopus zeitverzögert eintreffen.");
         apiNote.setPadding(dp(4), dp(4), dp(4), dp(10));
         content.addView(apiNote);
     }
