@@ -21,7 +21,7 @@ import java.util.Map;
 public final class OctopusClient {
     private static final String ENDPOINT = "https://api.oeg-kraken.energy/v1/graphql/";
     private static final ZoneId BERLIN = ZoneId.of("Europe/Berlin");
-    private static final long HISTORY_TTL_MS = 12L * 60L * 60L * 1000L;
+    private static final long HISTORY_TTL_MS = 24L * 60L * 60L * 1000L;
 
     public static final class Interval {
         public String readAt = "";
@@ -404,21 +404,30 @@ public final class OctopusClient {
     private void loadYearHistory(AccountContext context, String token, Summary s)
             throws Exception {
         LocalDate today = LocalDate.now(BERLIN);
-        String historyKey = historyKey(s.accountNumber, today.getYear(), s);
+        int currentYear = today.getYear();
 
-        List<DailyUsage> cachedFresh = readHistoryCache(historyKey, HISTORY_TTL_MS);
+        for (int year = currentYear - 1; year <= currentYear; year++) {
+            loadHistoryYear(context, token, s, year, today);
+        }
+        s.dailyHistory.sort((a, b) -> a.date.compareTo(b.date));
+    }
+
+    private void loadHistoryYear(AccountContext context, String token, Summary s,
+                                 int year, LocalDate today) throws Exception {
+        String key = historyKey(s.accountNumber, year, s);
+        List<DailyUsage> cachedFresh = readHistoryCache(key, HISTORY_TTL_MS);
         if (cachedFresh != null) {
             s.dailyHistory.addAll(cachedFresh);
             return;
         }
 
-        List<DailyUsage> stale = readHistoryCache(historyKey, Long.MAX_VALUE);
-
+        List<DailyUsage> stale = readHistoryCache(key, Long.MAX_VALUE);
         try {
             ZonedDateTime start =
-                    LocalDate.of(today.getYear(), 1, 1).atStartOfDay(BERLIN);
-            ZonedDateTime end =
-                    today.plusDays(1).atStartOfDay(BERLIN);
+                    LocalDate.of(year, 1, 1).atStartOfDay(BERLIN);
+            ZonedDateTime end = year == today.getYear()
+                    ? today.plusDays(1).atStartOfDay(BERLIN)
+                    : LocalDate.of(year + 1, 1, 1).atStartOfDay(BERLIN);
 
             List<Interval> hourly = fetchIntervals(
                     context,
@@ -427,7 +436,7 @@ public final class OctopusClient {
                     end,
                     "HOUR_INTERVAL",
                     500,
-                    30,
+                    40,
                     s);
 
             Map<String, DailyUsage> days = new LinkedHashMap<>();
@@ -448,15 +457,18 @@ public final class OctopusClient {
                 else day.normalKwh += in.kwh;
             }
 
-            s.dailyHistory.addAll(days.values());
-            writeHistoryCache(historyKey, s.dailyHistory);
+            List<DailyUsage> yearHistory = new ArrayList<>(days.values());
+            s.dailyHistory.addAll(yearHistory);
+            writeHistoryCache(key, yearHistory);
         } catch (Exception e) {
             if (stale != null && !stale.isEmpty()) {
                 s.dailyHistory.addAll(stale);
                 appendNote(s,
-                        "Historie aus lokalem Cache; Octopus-Aktualisierung derzeit nicht möglich.");
-            } else {
+                        "Historie " + year + " aus lokalem Cache; Octopus-Aktualisierung derzeit nicht möglich.");
+            } else if (year == today.getYear()) {
                 throw e;
+            } else {
+                appendNote(s, "Keine Octopus-Historie für " + year + " verfügbar.");
             }
         }
     }
