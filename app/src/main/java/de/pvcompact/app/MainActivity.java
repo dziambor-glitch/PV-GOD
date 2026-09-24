@@ -132,6 +132,7 @@ public final class MainActivity extends Activity {
         addNav(nav, "☀", "PV", "PV");
         addNav(nav, "☁", "Forecast", "Forecast");
         addNav(nav, "€", "Octopus", "Octopus");
+        addNav(nav, "▥", "Statistik", "Statistik");
         addNav(nav, "⚙", "System", "System");
         root.addView(nav, new LinearLayout.LayoutParams(-1, dp(68)));
 
@@ -148,7 +149,7 @@ public final class MainActivity extends Activity {
 
         TextView i = UiKit.text(this, icon, 18, UiKit.MUTED);
         i.setGravity(Gravity.CENTER);
-        TextView l = UiKit.text(this, label, 11, UiKit.MUTED);
+        TextView l = UiKit.text(this, label, 10, UiKit.MUTED);
         l.setGravity(Gravity.CENTER);
         l.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         item.addView(i, new LinearLayout.LayoutParams(-1, dp(26)));
@@ -173,6 +174,9 @@ public final class MainActivity extends Activity {
                 break;
             case "Octopus":
                 showOctopus();
+                break;
+            case "Statistik":
+                showStatistics();
                 break;
             case "System":
                 showSystem();
@@ -855,6 +859,225 @@ public final class MainActivity extends Activity {
                 "E-Mail + Passwort werden nur für die erstmalige Anmeldung verwendet und nicht gespeichert. Der danach von Octopus gelieferte Refresh Token wird verschlüsselt im Android Keystore gespeichert. Smart-Meter-Werte können bei Octopus zeitverzögert eintreffen.");
         apiNote.setPadding(dp(4), dp(4), dp(4), dp(10));
         content.addView(apiNote);
+    }
+
+    private void showStatistics() {
+        pageHeader("Statistik", "Deine Energie-Bilanz über Monate und Jahre");
+
+        if (pv == null || octopus == null) {
+            LinearLayout missing = UiKit.card(this);
+            missing.addView(UiKit.overline(this, "DATENBASIS", UiKit.AMBER));
+            TextView title = UiKit.text(this, "PVOutput und Octopus werden benötigt", 19, UiKit.INK);
+            title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            title.setPadding(0, dp(7), 0, dp(5));
+            missing.addView(title);
+            missing.addView(UiKit.caption(this,
+                    "Für die Gesamtstatistik kombiniert PV Compact deinen PV-Ertrag aus PVOutput "
+                            + "mit dem Netzbezug aus dem Octopus Smart Meter."));
+            content.addView(missing);
+            return;
+        }
+
+        List<EnergyPeriod> months = monthlyEnergyPeriodsChronological();
+        EnergyPeriod overall = overallEnergyPeriod(months);
+
+        content.addView(UiKit.sectionTitle(this, "Gesamt verfügbar"));
+
+        LinearLayout r1 = UiKit.row(this);
+        r1.setBaselineAligned(false);
+        r1.addView(metric("AUTARKIE",
+                overall.hasPv && overall.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.1f %%", autonomyPercent(overall))
+                        : "—",
+                "PV / (PV + Netzbezug)",
+                UiKit.GREEN, UiKit.MINT), metricLp(true));
+        r1.addView(metric("NETZBEZUG",
+                overall.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.0f kWh", overall.gridKwh)
+                        : "—",
+                "Haupt- + Nebenzeit",
+                UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
+        content.addView(r1);
+
+        LinearLayout r2 = UiKit.row(this);
+        r2.setBaselineAligned(false);
+        r2.addView(metric("PV-ERTRAG",
+                overall.hasPv
+                        ? String.format(Locale.GERMANY, "%.0f kWh", overall.pvKwh)
+                        : "—",
+                "PVOutput · Null-Einspeisung",
+                UiKit.GREEN, UiKit.MINT), metricLp(true));
+        r2.addView(metric("KOSTEN",
+                overall.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f €", overall.costEuro)
+                        : "—",
+                "Netzbezug · geschätzt",
+                UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(false));
+        content.addView(r2);
+
+        TextView note = UiKit.caption(this,
+                "Autarkie ist eine Näherung aus PV-Ertrag ÷ (PV-Ertrag + Netzbezug). "
+                        + "Bei deiner Null-Einspeisung ist das eine praktische Kennzahl. "
+                        + "Batterie-Ladezustand an Periodengrenzen und Umwandlungsverluste können den Wert leicht verschieben.");
+        note.setPadding(dp(4), 0, dp(4), dp(8));
+        content.addView(note);
+
+        if (months.isEmpty()) {
+            LinearLayout empty = UiKit.card(this);
+            empty.addView(UiKit.caption(this, "Noch keine Monatsdaten verfügbar."));
+            content.addView(empty);
+            return;
+        }
+
+        content.addView(UiKit.sectionTitle(this, "Monatsverlauf · letzte 12 Monate"));
+        addStatsChartCard("PV und Netzbezug",
+                "Wie sich eigener Solarstrom und Strom aus dem Netz gegenüberstehen.",
+                energyChart(months, SimpleEnergyChartView.TYPE_GROUPED_BAR,
+                        new String[]{"PV", "Netz"},
+                        new int[]{UiKit.GREEN, UiKit.BLUE},
+                        new ValuePicker[]{p -> p.pvKwh, p -> p.gridKwh},
+                        "kWh"));
+
+        addStatsChartCard("Netzbezug Haupt- / Nebenzeit",
+                "Nebenzeit entspricht deinem Octopus-Go-Günstigfenster.",
+                energyChart(months, SimpleEnergyChartView.TYPE_STACKED_BAR,
+                        new String[]{"Hauptzeit", "Nebenzeit"},
+                        new int[]{UiKit.BLUE, UiKit.PURPLE},
+                        new ValuePicker[]{p -> p.normalKwh, p -> p.cheapKwh},
+                        "kWh"));
+
+        addStatsChartCard("Stromkosten pro Monat",
+                "Geschätzte Kosten des Netzbezugs auf Basis der aktuell hinterlegten Tarifpreise.",
+                energyChart(months, SimpleEnergyChartView.TYPE_GROUPED_BAR,
+                        new String[]{"Kosten"},
+                        new int[]{UiKit.PURPLE},
+                        new ValuePicker[]{p -> p.costEuro},
+                        "€"));
+
+        addStatsChartCard("Autarkiegrad pro Monat",
+                "Je höher, desto größer der Anteil deines Energiebedarfs, den die PV abdeckt.",
+                energyChart(months, SimpleEnergyChartView.TYPE_LINE,
+                        new String[]{"Autarkie"},
+                        new int[]{UiKit.GREEN},
+                        new ValuePicker[]{this::autonomyPercent},
+                        "%"));
+
+        List<EnergyPeriod> years = yearlyEnergyPeriodsChronological();
+        if (!years.isEmpty()) {
+            content.addView(UiKit.sectionTitle(this, "Jahresvergleich"));
+            addStatsChartCard("PV und Netzbezug nach Jahr",
+                    "Aktuelles Jahr ist der bisher verfügbare Stand.",
+                    energyChart(years, SimpleEnergyChartView.TYPE_GROUPED_BAR,
+                            new String[]{"PV", "Netz"},
+                            new int[]{UiKit.GREEN, UiKit.BLUE},
+                            new ValuePicker[]{p -> p.pvKwh, p -> p.gridKwh},
+                            "kWh"));
+
+            addStatsChartCard("Autarkie nach Jahr",
+                    "Vergleich der verfügbaren Jahreswerte.",
+                    energyChart(years, SimpleEnergyChartView.TYPE_GROUPED_BAR,
+                            new String[]{"Autarkie"},
+                            new int[]{UiKit.GREEN},
+                            new ValuePicker[]{this::autonomyPercent},
+                            "%"));
+        }
+
+        content.addView(UiKit.sectionTitle(this, "Monatswerte"));
+        addPeriodStrip("Monate", monthlyEnergyPeriods());
+
+        Button refresh = UiKit.primaryButton(this, "Statistik aktualisieren");
+        refresh.setOnClickListener(v -> refreshAll());
+        content.addView(refresh, buttonLp());
+    }
+
+    private void addStatsChartCard(String title, String detail, SimpleEnergyChartView chart) {
+        LinearLayout card = UiKit.card(this);
+        TextView h = UiKit.text(this, title, 17, UiKit.INK);
+        h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        card.addView(h);
+
+        TextView d = UiKit.caption(this, detail);
+        d.setPadding(0, dp(3), 0, dp(4));
+        card.addView(d);
+
+        card.addView(chart, new LinearLayout.LayoutParams(-1, dp(250)));
+        content.addView(card);
+    }
+
+    private interface ValuePicker {
+        double get(EnergyPeriod period);
+    }
+
+    private SimpleEnergyChartView energyChart(
+            List<EnergyPeriod> periods,
+            int type,
+            String[] names,
+            int[] colors,
+            ValuePicker[] pickers,
+            String suffix) {
+
+        List<String> labels = new ArrayList<>();
+        for (EnergyPeriod p : periods) labels.add(shortPeriodLabel(p.label));
+
+        List<SimpleEnergyChartView.Series> series = new ArrayList<>();
+        for (int s = 0; s < pickers.length; s++) {
+            double[] values = new double[periods.size()];
+            for (int i = 0; i < periods.size(); i++) {
+                values[i] = Math.max(0, pickers[s].get(periods.get(i)));
+            }
+            series.add(new SimpleEnergyChartView.Series(names[s], values, colors[s]));
+        }
+        return new SimpleEnergyChartView(this, type, labels, series, suffix);
+    }
+
+    private String shortPeriodLabel(String label) {
+        if (label == null || label.isEmpty()) return "";
+        String[] parts = label.split(" ");
+        if (parts.length >= 2 && parts[0].length() > 2) {
+            String month = parts[0].substring(0, Math.min(3, parts[0].length()));
+            String year = parts[1].length() >= 4 ? parts[1].substring(2) : parts[1];
+            return month + " " + year;
+        }
+        if (label.contains(" · ")) return label.substring(0, label.indexOf(" · "));
+        return label;
+    }
+
+    private List<EnergyPeriod> monthlyEnergyPeriodsChronological() {
+        List<EnergyPeriod> out = monthlyEnergyPeriods();
+        Collections.reverse(out);
+        return out;
+    }
+
+    private List<EnergyPeriod> yearlyEnergyPeriodsChronological() {
+        List<EnergyPeriod> out = yearlyEnergyPeriods();
+        Collections.reverse(out);
+        return out;
+    }
+
+    private EnergyPeriod overallEnergyPeriod(List<EnergyPeriod> months) {
+        EnergyPeriod out = new EnergyPeriod();
+        out.label = "Gesamt";
+        for (EnergyPeriod p : months) {
+            if (p.hasPv) {
+                out.pvKwh += p.pvKwh;
+                out.hasPv = true;
+            }
+            if (p.hasOctopus) {
+                out.gridKwh += p.gridKwh;
+                out.cheapKwh += p.cheapKwh;
+                out.normalKwh += p.normalKwh;
+                out.costEuro += p.costEuro;
+                out.hasOctopus = true;
+            }
+        }
+        return out;
+    }
+
+    private double autonomyPercent(EnergyPeriod p) {
+        if (p == null || !p.hasPv || !p.hasOctopus) return 0.0;
+        double total = p.pvKwh + p.gridKwh;
+        if (total <= 0) return 0.0;
+        return Math.max(0.0, Math.min(100.0, p.pvKwh / total * 100.0));
     }
 
     private void showSystem() {
@@ -1554,7 +1777,7 @@ public final class MainActivity extends Activity {
                     octopus = s;
                     octopusError = "";
                     updateHeaderStatus();
-                    if ("Octopus".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
+                    if ("Octopus".equals(currentTab) || "Statistik".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
                 });
             } catch (Exception e) {
                 String err = cleanError(e);
