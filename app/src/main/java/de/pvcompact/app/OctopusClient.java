@@ -120,12 +120,10 @@ public final class OctopusClient {
         s.authenticated = true;
         s.refreshedToken = auth.refreshToken;
 
-        String resolvedAccount = account;
+        List<String> availableAccounts = discoverAccounts(auth.token);
+        String resolvedAccount = resolveAccount(account, availableAccounts, s);
         if (resolvedAccount.isEmpty()) {
-            resolvedAccount = discoverSingleAccount(auth.token);
-        }
-        if (resolvedAccount.isEmpty()) {
-            throw new IllegalStateException("Keine Octopus Kundennummer im Konto gefunden");
+            throw new IllegalStateException("Keine Octopus Kundennummer im eingeloggten Konto gefunden");
         }
         s.accountNumber = resolvedAccount;
 
@@ -138,7 +136,9 @@ public final class OctopusClient {
         }
 
         if (context.propertyId.isEmpty() || context.maloNumber.isEmpty()) {
-            appendNote(s, "Smart-Meter-Zuordnung fehlt im Octopus-Konto.");
+            appendNote(s,
+                    "Strom-Zählpunkt konnte noch nicht aus dem Octopus-Konto gelesen werden. "
+                            + "Das bedeutet nicht automatisch, dass kein Smart Meter vorhanden ist.");
             return s;
         }
 
@@ -199,22 +199,54 @@ public final class OctopusClient {
         return a;
     }
 
-    private String discoverSingleAccount(String token) throws Exception {
+    private List<String> discoverAccounts(String token) throws Exception {
         String query = "query { viewer { accounts { number } } }";
         JSONObject root = post(query, new JSONObject(), token);
         String err = firstError(root);
         if (err != null) throw new IllegalStateException("Kontosuche: " + err);
 
+        List<String> out = new ArrayList<>();
         JSONObject data = root.optJSONObject("data");
         JSONObject viewer = data == null ? null : data.optJSONObject("viewer");
         JSONArray accounts = viewer == null ? null : viewer.optJSONArray("accounts");
-        if (accounts == null || accounts.length() == 0) return "";
-        if (accounts.length() > 1) {
-            throw new IllegalStateException(
-                    "Mehrere Octopus-Konten gefunden. Bitte die Kundennummer in den Einstellungen eintragen.");
+        if (accounts == null) return out;
+
+        for (int i = 0; i < accounts.length(); i++) {
+            JSONObject a = accounts.optJSONObject(i);
+            if (a == null) continue;
+            String number = safe(a.optString("number", ""));
+            if (!number.isEmpty() && !out.contains(number)) out.add(number);
         }
-        JSONObject first = accounts.optJSONObject(0);
-        return first == null ? "" : first.optString("number", "");
+        return out;
+    }
+
+    private String resolveAccount(String configured, List<String> available, Summary s) {
+        String wanted = safe(configured);
+        if (available == null || available.isEmpty()) return wanted;
+
+        for (String candidate : available) {
+            if (candidate.equalsIgnoreCase(wanted)) return candidate;
+        }
+
+        if (available.size() == 1) {
+            String found = available.get(0);
+            if (!wanted.isEmpty()) {
+                appendNote(s,
+                        "Die hinterlegte Kundennummer passte nicht zum Login; "
+                                + "PV Compact verwendet automatisch das von Octopus gemeldete Konto.");
+            } else {
+                appendNote(s, "Octopus-Konto automatisch erkannt.");
+            }
+            return found;
+        }
+
+        if (wanted.isEmpty()) {
+            throw new IllegalStateException(
+                    "Mehrere Octopus-Konten gefunden. Bitte die passende Kundennummer auswählen.");
+        }
+
+        throw new IllegalStateException(
+                "Die hinterlegte Kundennummer gehört nicht zu diesem Octopus-Login.");
     }
 
     private AccountContext loadTariff(String accountNumber, String token, Summary s)
@@ -229,6 +261,7 @@ public final class OctopusClient {
               + "    agreements {"
               + "     isActive isRevoked isTerminated validFrom validTo"
               + "     product { code description fullName isTimeOfUse }"
+              + "     unitRateGrossRateInformation { grossRate }"
               + "     unitRateInformation {"
               + "      __typename"
               + "      ... on SimpleProductUnitRateInformation { latestGrossUnitRateCentsPerKwh }"
@@ -248,12 +281,21 @@ public final class OctopusClient {
 
         JSONObject vars = new JSONObject().put("accountNumber", accountNumber);
         JSONObject root = post(query, vars, token);
-        String err = firstError(root);
-        if (err != null) throw new IllegalStateException("Tarifabfrage: " + err);
 
         AccountContext context = new AccountContext();
         JSONObject data = root.optJSONObject("data");
         JSONObject accountObj = data == null ? null : data.optJSONObject("account");
+
+        String err = firstError(root);
+        if (accountObj == null) {
+            if (err != null) throw new IllegalStateException("Tarifabfrage: " + err);
+            return context;
+        }
+        if (err != null) {
+            appendNote(s,
+                    "Octopus hat bei einzelnen Tarif-Feldern eingeschränkten Zugriff gemeldet; "
+                            + "verfügbare Kontodaten werden trotzdem verwendet.");
+        }
         JSONArray properties =
                 accountObj == null ? null : accountObj.optJSONArray("allProperties");
         if (properties == null) return context;
@@ -268,6 +310,11 @@ public final class OctopusClient {
             for (int m = 0; m < malos.length(); m++) {
                 JSONObject malo = malos.optJSONObject(m);
                 if (malo == null) continue;
+                if (context.propertyId.isEmpty()) {
+                    context.propertyId = prop.optString("id", "");
+                    context.maloNumber = malo.optString("maloNumber", "");
+                }
+
                 JSONArray agreements = malo.optJSONArray("agreements");
                 if (agreements == null) continue;
 
@@ -295,7 +342,15 @@ public final class OctopusClient {
         }
 
         JSONObject ratesInfo = selectedAgreement.optJSONObject("unitRateInformation");
-        if (ratesInfo == null) return context;
+        if (ratesInfo == null) {
+            JSONObject gross = selectedAgreement.optJSONObject("unitRateGrossRateInformation");
+            double rate = gross == null ? Double.NaN : gross.optDouble("grossRate", Double.NaN);
+            if (Double.isFinite(rate)) {
+                s.normalCents = rate;
+                s.tariffFromApi = true;
+            }
+            return context;
+        }
 
         String type = ratesInfo.optString("__typename", "");
         if ("SimpleProductUnitRateInformation".equals(type)) {
