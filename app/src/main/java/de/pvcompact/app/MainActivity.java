@@ -2044,6 +2044,7 @@ public final class MainActivity extends Activity {
         }
 
         if (octopus != null) {
+            boolean foundDaily = false;
             for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
                 LocalDate date;
                 try {
@@ -2057,11 +2058,34 @@ public final class MainActivity extends Activity {
                 p.cheapKwh += d.cheapKwh;
                 p.normalKwh += d.normalKwh;
                 p.hasOctopus = true;
+                foundDaily = true;
+            }
+
+            if (!foundDaily) {
+                for (OctopusClient.Interval in : octopus.intervals) {
+                    LocalDate date = octopusIntervalDate(in.readAt);
+                    if (date == null || date.isBefore(start) || date.isAfter(end)) continue;
+                    p.gridKwh += in.kwh;
+                    if (in.cheap) p.cheapKwh += in.kwh;
+                    else p.normalKwh += in.kwh;
+                    p.hasOctopus = true;
+                }
             }
         }
 
         p.costEuro = historyCost(p.cheapKwh, p.normalKwh);
         return p;
+    }
+
+    private LocalDate octopusIntervalDate(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return java.time.Instant.parse(value).atZone(BERLIN).toLocalDate();
+        } catch (Exception ignored) {}
+        try {
+            return java.time.OffsetDateTime.parse(value).atZoneSameInstant(BERLIN).toLocalDate();
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private LocalDate parsePvDate(String value) {
