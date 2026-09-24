@@ -257,6 +257,52 @@ public final class MainActivity extends Activity {
                 metricLp(false));
         content.addView(row2);
 
+        content.addView(UiKit.sectionTitle(this, "Gestern"));
+        EnergyPeriod yesterday = energyForRange(
+                LocalDate.now(BERLIN).minusDays(1),
+                LocalDate.now(BERLIN).minusDays(1),
+                "Gestern");
+
+        LinearLayout yesterdayRow1 = UiKit.row(this);
+        yesterdayRow1.setBaselineAligned(false);
+        yesterdayRow1.addView(metric(
+                "PV-ERTRAG",
+                yesterday.hasPv
+                        ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.pvKwh)
+                        : "—",
+                "gestern · eigener Solarstrom",
+                UiKit.GREEN,
+                UiKit.MINT), metricLp(true));
+        yesterdayRow1.addView(metric(
+                "NETZ HAUPTZEIT",
+                yesterday.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.normalKwh)
+                        : "—",
+                "außerhalb " + currentCheapStart() + "–" + currentCheapEnd(),
+                UiKit.BLUE,
+                UiKit.BLUE_SOFT), metricLp(false));
+        content.addView(yesterdayRow1);
+
+        LinearLayout yesterdayRow2 = UiKit.row(this);
+        yesterdayRow2.setBaselineAligned(false);
+        yesterdayRow2.addView(metric(
+                "NETZ NEBENZEIT",
+                yesterday.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.cheapKwh)
+                        : "—",
+                currentCheapStart() + "–" + currentCheapEnd(),
+                UiKit.PURPLE,
+                UiKit.PURPLE_SOFT), metricLp(true));
+        yesterdayRow2.addView(metric(
+                "KOSTEN",
+                yesterday.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f €", yesterday.costEuro)
+                        : "—",
+                "Netzbezug gestern · geschätzt",
+                UiKit.AMBER,
+                UiKit.AMBER_SOFT), metricLp(false));
+        content.addView(yesterdayRow2);
+
         content.addView(UiKit.sectionTitle(this, "Verbindungen"));
         LinearLayout statusCard = UiKit.card(this);
         statusCard.addView(statusLine("PVOutput", pv != null,
@@ -756,11 +802,11 @@ public final class MainActivity extends Activity {
             content.addView(r1);
 
             LinearLayout r2 = UiKit.row(this);
-            r2.addView(metric("GÜNSTIG",
+            r2.addView(metric("NEBENZEIT",
                     String.format(Locale.GERMANY, "%.2f kWh", octopus.cheapKwh),
                     prefs.get("cheap_start", "00:00") + "–" + prefs.get("cheap_end", "05:00"),
                     UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(true));
-            r2.addView(metric("NORMAL",
+            r2.addView(metric("HAUPTZEIT",
                     String.format(Locale.GERMANY, "%.2f kWh", octopus.normalKwh),
                     "außerhalb des Fensters",
                     UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
@@ -772,6 +818,8 @@ public final class MainActivity extends Activity {
             n.setPadding(0, dp(6), 0, 0);
             note.addView(n);
             content.addView(note);
+
+            showEnergyStatistics();
         } else {
             LinearLayout connect = UiKit.card(this);
             connect.addView(UiKit.overline(this, "VERBINDUNG", UiKit.PURPLE));
@@ -1488,6 +1536,7 @@ public final class MainActivity extends Activity {
         io.execute(() -> {
             try {
                 OctopusClient client = new OctopusClient(
+                        this,
                         prefs.get("oct_account", ""),
                         prefs.getSecret("oct_api_key"),
                         prefs.getSecret("oct_refresh"),
@@ -1515,6 +1564,230 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void showEnergyStatistics() {
+        content.addView(UiKit.sectionTitle(this, "Energie-Statistik"));
+        TextView intro = UiKit.caption(this,
+                "PV-Ertrag aus PVOutput · Netzbezug aus Octopus Smart Meter · "
+                        + "Haupt-/Nebenzeit nach deinem Go-Zeitfenster. Kosten sind eine Schätzung mit den aktuell hinterlegten Tarifpreisen.");
+        intro.setPadding(dp(4), 0, dp(4), dp(8));
+        content.addView(intro);
+
+        addPeriodStrip("Wochen", weeklyEnergyPeriods());
+        addPeriodStrip("Monate", monthlyEnergyPeriods());
+        addPeriodStrip("Jahre", yearlyEnergyPeriods());
+    }
+
+    private void addPeriodStrip(String title, List<EnergyPeriod> periods) {
+        TextView heading = UiKit.text(this, title, 16, UiKit.INK);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(dp(2), dp(10), 0, dp(7));
+        content.addView(heading);
+
+        if (periods.isEmpty()) {
+            LinearLayout empty = UiKit.card(this);
+            empty.addView(UiKit.caption(this, "Für diesen Zeitraum liegen noch keine gemeinsamen Statistikdaten vor."));
+            content.addView(empty);
+            return;
+        }
+
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = UiKit.row(this);
+        row.setPadding(0, 0, dp(6), dp(4));
+
+        for (EnergyPeriod p : periods) {
+            LinearLayout card = energyPeriodCard(p);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(268), -2);
+            lp.setMargins(0, 0, dp(10), dp(8));
+            row.addView(card, lp);
+        }
+
+        scroll.addView(row);
+        content.addView(scroll);
+    }
+
+    private LinearLayout energyPeriodCard(EnergyPeriod p) {
+        LinearLayout card = UiKit.card(this);
+        card.addView(UiKit.overline(this, p.label, UiKit.PURPLE));
+
+        TextView pvText = UiKit.text(this,
+                "PV-Ertrag  " + (p.hasPv
+                        ? String.format(Locale.GERMANY, "%.1f kWh", p.pvKwh)
+                        : "—"),
+                15, UiKit.GREEN_DARK);
+        pvText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        pvText.setPadding(0, dp(9), 0, dp(5));
+        card.addView(pvText);
+
+        TextView gridText = UiKit.text(this,
+                "Netzbezug  " + (p.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.1f kWh", p.gridKwh)
+                        : "—"),
+                15, UiKit.INK);
+        gridText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        card.addView(gridText);
+
+        card.addView(UiKit.divider(this), dividerLp());
+
+        String split = p.hasOctopus
+                ? String.format(Locale.GERMANY,
+                        "Hauptzeit %.1f kWh\nNebenzeit %.1f kWh",
+                        p.normalKwh, p.cheapKwh)
+                : "Hauptzeit —\nNebenzeit —";
+        TextView splitText = UiKit.caption(this, split);
+        splitText.setLineSpacing(0, 1.15f);
+        card.addView(splitText);
+
+        TextView cost = UiKit.text(this,
+                p.hasOctopus
+                        ? String.format(Locale.GERMANY, "Kosten  %.2f €", p.costEuro)
+                        : "Kosten  —",
+                15, UiKit.PURPLE);
+        cost.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        cost.setPadding(0, dp(9), 0, 0);
+        card.addView(cost);
+        return card;
+    }
+
+    private List<EnergyPeriod> weeklyEnergyPeriods() {
+        List<EnergyPeriod> out = new ArrayList<>();
+        LocalDate today = LocalDate.now(BERLIN);
+        LocalDate thisMonday = today.minusDays(today.getDayOfWeek().getValue() - 1L);
+
+        for (int i = 0; i < 8; i++) {
+            LocalDate start = thisMonday.minusWeeks(i);
+            LocalDate end = start.plusDays(6);
+            int week = start.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+            String label = "KW " + week + " · "
+                    + start.format(DateTimeFormatter.ofPattern("dd.MM."))
+                    + "–" + end.format(DateTimeFormatter.ofPattern("dd.MM."));
+            out.add(energyForRange(start, end, label));
+        }
+        return out;
+    }
+
+    private List<EnergyPeriod> monthlyEnergyPeriods() {
+        List<EnergyPeriod> out = new ArrayList<>();
+        LocalDate month = LocalDate.now(BERLIN).withDayOfMonth(1);
+
+        for (int i = 0; i < 12; i++) {
+            LocalDate start = month.minusMonths(i);
+            LocalDate end = start.plusMonths(1).minusDays(1);
+            String label = start.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.GERMANY));
+            EnergyPeriod p = energyForRange(start, end, label);
+            p.pvKwh = pvForMonth(start);
+            p.hasPv = hasPvMonth(start);
+            out.add(p);
+        }
+        return out;
+    }
+
+    private List<EnergyPeriod> yearlyEnergyPeriods() {
+        List<EnergyPeriod> out = new ArrayList<>();
+        int year = LocalDate.now(BERLIN).getYear();
+
+        for (int y = year; y >= year - 1; y--) {
+            LocalDate start = LocalDate.of(y, 1, 1);
+            LocalDate end = LocalDate.of(y, 12, 31);
+            EnergyPeriod p = energyForRange(start, end,
+                    y == year ? y + " · bisher" : Integer.toString(y));
+            p.pvKwh = pvForYear(y);
+            p.hasPv = hasPvYear(y);
+            if (p.hasPv || p.hasOctopus) out.add(p);
+        }
+        return out;
+    }
+
+    private EnergyPeriod energyForRange(LocalDate start, LocalDate end, String label) {
+        EnergyPeriod p = new EnergyPeriod();
+        p.label = label;
+
+        if (pv != null) {
+            for (PvOutputClient.Day d : pv.recentDays) {
+                LocalDate date = parsePvDate(d.date);
+                if (date == null || date.isBefore(start) || date.isAfter(end)) continue;
+                p.pvKwh += d.generatedWh / 1000.0;
+                p.hasPv = true;
+            }
+        }
+
+        if (octopus != null) {
+            for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+                LocalDate date;
+                try {
+                    date = LocalDate.parse(d.date);
+                } catch (Exception ignored) {
+                    continue;
+                }
+                if (date.isBefore(start) || date.isAfter(end)) continue;
+
+                p.gridKwh += d.totalKwh;
+                p.cheapKwh += d.cheapKwh;
+                p.normalKwh += d.normalKwh;
+                p.hasOctopus = true;
+            }
+        }
+
+        p.costEuro = historyCost(p.cheapKwh, p.normalKwh);
+        return p;
+    }
+
+    private LocalDate parsePvDate(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            if (value.matches("\\d{8}")) {
+                return LocalDate.parse(value, DateTimeFormatter.BASIC_ISO_DATE);
+            }
+            return LocalDate.parse(value);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private double pvForMonth(LocalDate monthStart) {
+        if (pv == null) return 0.0;
+        String key = monthStart.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        for (PvOutputClient.Month m : pv.months) {
+            if (key.equals(m.month)) return m.generatedWh / 1000.0;
+        }
+        return 0.0;
+    }
+
+    private boolean hasPvMonth(LocalDate monthStart) {
+        if (pv == null) return false;
+        String key = monthStart.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        for (PvOutputClient.Month m : pv.months) {
+            if (key.equals(m.month)) return true;
+        }
+        return false;
+    }
+
+    private double pvForYear(int year) {
+        if (pv == null) return 0.0;
+        for (PvOutputClient.Year y : pv.years) {
+            if (y.year == year) return y.generatedWh / 1000.0;
+        }
+        return 0.0;
+    }
+
+    private boolean hasPvYear(int year) {
+        if (pv == null) return false;
+        for (PvOutputClient.Year y : pv.years) {
+            if (y.year == year) return true;
+        }
+        return false;
+    }
+
+    private double historyCost(double cheapKwh, double normalKwh) {
+        double cheapRate = octopus != null && Double.isFinite(octopus.cheapCents)
+                ? octopus.cheapCents
+                : parseDouble(prefs.get("cheap_price", "19"), 19);
+        double normalRate = octopus != null && Double.isFinite(octopus.normalCents)
+                ? octopus.normalCents
+                : parseDouble(prefs.get("normal_price", "29"), 29);
+        return (cheapKwh * cheapRate + normalKwh * normalRate) / 100.0;
     }
 
     private void checkController() {
@@ -1727,6 +2000,17 @@ public final class MainActivity extends Activity {
 
     private int dp(int v) {
         return UiKit.dp(this, v);
+    }
+
+    private static final class EnergyPeriod {
+        String label = "";
+        double pvKwh;
+        double gridKwh;
+        double cheapKwh;
+        double normalKwh;
+        double costEuro;
+        boolean hasPv;
+        boolean hasOctopus;
     }
 
     private static final class NavItem {
