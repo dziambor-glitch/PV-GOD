@@ -716,7 +716,10 @@ public final class MainActivity extends Activity {
                 cheap ? Color.rgb(212, 194, 243) : UiKit.LINE, 22));
 
         LinearLayout tariffHead = UiKit.row(this);
-        tariffHead.addView(UiKit.overline(this, "OCTOPUS GO", UiKit.PURPLE),
+        String tariffName = octopus != null && octopus.productName != null && !octopus.productName.isEmpty()
+                ? octopus.productName
+                : "OCTOPUS GO";
+        tariffHead.addView(UiKit.overline(this, tariffName.toUpperCase(Locale.GERMANY), UiKit.PURPLE),
                 new LinearLayout.LayoutParams(0, -2, 1f));
         tariffHead.addView(UiKit.pill(this,
                 cheap ? "GÜNSTIG AKTIV" : "NORMAL",
@@ -730,10 +733,13 @@ public final class MainActivity extends Activity {
         priceView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         priceView.setPadding(0, dp(9), 0, dp(3));
         tariff.addView(priceView);
+        double shownCheapRate = octopus != null && Double.isFinite(octopus.cheapCents)
+                ? octopus.cheapCents
+                : parseDouble(prefs.get("cheap_price", "19"), 19);
         tariff.addView(UiKit.caption(this,
-                "Günstig " + prefs.get("cheap_start", "00:00") + "–"
-                        + prefs.get("cheap_end", "05:00") + " · "
-                        + prefs.get("cheap_price", "19") + " ct/kWh"));
+                "Günstig " + currentCheapStart() + "–" + currentCheapEnd() + " · "
+                        + String.format(Locale.GERMANY, "%.2f", shownCheapRate) + " ct/kWh"
+                        + (octopus != null && octopus.tariffFromApi ? " · live aus Vertrag" : " · manuelle Vorgabe")));
         content.addView(tariff);
 
         if (octopus != null) {
@@ -1032,7 +1038,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout octCard = settingsCard("Octopus Energy", "Konto verbinden und Go-Tarif einstellen");
         TextView octNote = UiKit.caption(this,
-                "Im normalen Bereich brauchst du nur deine Kundennummer. Technische Zugangsdaten liegen hinter „Octopus verbinden“ und werden verschlüsselt gespeichert.");
+                "Du kannst Octopus direkt mit E-Mail + Passwort verbinden. Das Passwort wird nicht gespeichert; nach erfolgreicher Anmeldung bleibt nur der Refresh Token verschlüsselt im Android Keystore.");
         octNote.setPadding(0, 0, 0, dp(9));
         octCard.addView(octNote);
 
@@ -1274,43 +1280,57 @@ public final class MainActivity extends Activity {
         box.setPadding(dp(20), dp(8), dp(20), 0);
 
         TextView intro = UiKit.caption(this,
-                "Konto " + accountNumber + "\n\nFür den geschützten API-Zugriff braucht Octopus zusätzlich einen API-Key oder Refresh Token. E-Mail und Passwort werden von PV Compact nicht gespeichert oder verwendet.");
+                "Konto " + accountNumber
+                        + "\n\nAm einfachsten: einmal mit deiner Octopus-E-Mail-Adresse und deinem Passwort anmelden. "
+                        + "Das Passwort wird nur für diesen Verbindungstest verwendet und nicht gespeichert. "
+                        + "Nach erfolgreicher Anmeldung speichert PV Compact ausschließlich den Refresh Token verschlüsselt.");
         intro.setPadding(0, 0, 0, dp(12));
         box.addView(intro);
 
-        EditText apiKey = UiKit.input(this, "Kraken API-Key", prefs.getSecret("oct_api_key"), true);
+        EditText email = UiKit.input(this, "Octopus E-Mail-Adresse", "", false);
+        LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(-1, dp(52));
+        ep.setMargins(0, 0, 0, dp(9));
+        box.addView(email, ep);
+
+        EditText password = UiKit.input(this, "Octopus Passwort", "", true);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, dp(52));
+        pp.setMargins(0, 0, 0, dp(12));
+        box.addView(password, pp);
+
+        TextView advanced = UiKit.caption(this,
+                "Alternativ, falls vorhanden: API-Key oder bereits vorhandenen Refresh Token verwenden.");
+        advanced.setPadding(0, 0, 0, dp(8));
+        box.addView(advanced);
+
+        EditText apiKey = UiKit.input(this, "Kraken API-Key (optional)", prefs.getSecret("oct_api_key"), true);
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, dp(52));
         ap.setMargins(0, 0, 0, dp(9));
         box.addView(apiKey, ap);
 
-        TextView or = UiKit.text(this, "oder", 12, UiKit.MUTED);
-        or.setGravity(Gravity.CENTER);
-        or.setPadding(0, 0, 0, dp(9));
-        box.addView(or);
-
-        EditText refresh = UiKit.input(this, "Refresh Token", prefs.getSecret("oct_refresh"), true);
+        EditText refresh = UiKit.input(this, "Refresh Token (optional)", prefs.getSecret("oct_refresh"), true);
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, dp(52));
         rp.setMargins(0, 0, 0, dp(10));
         box.addView(refresh, rp);
-
-        TextView note = UiKit.caption(this,
-                "Du brauchst nur einen der beiden Schlüssel. Beide werden verschlüsselt im Android Keystore abgelegt.");
-        box.addView(note);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Octopus verbinden")
                 .setView(box)
                 .setNegativeButton("Abbrechen", null)
-                .setPositiveButton("Speichern & testen", null)
+                .setPositiveButton("Verbinden & testen", null)
                 .create();
 
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(v -> {
+                    String emailValue = email.getText().toString().trim();
+                    String passwordValue = password.getText().toString();
                     String keyValue = apiKey.getText().toString().trim();
                     String refreshValue = refresh.getText().toString().trim();
-                    if (keyValue.isEmpty() && refreshValue.isEmpty()) {
+
+                    boolean loginProvided = !emailValue.isEmpty() && !passwordValue.isEmpty();
+                    boolean tokenProvided = !keyValue.isEmpty() || !refreshValue.isEmpty();
+                    if (!loginProvided && !tokenProvided) {
                         Toast.makeText(this,
-                                "Bitte API-Key oder Refresh Token eingeben.",
+                                "Bitte E-Mail + Passwort oder API-Key/Refresh Token eingeben.",
                                 Toast.LENGTH_LONG).show();
                         return;
                     }
@@ -1321,8 +1341,13 @@ public final class MainActivity extends Activity {
                     octopus = null;
                     octopusError = "";
                     dialog.dismiss();
-                    Toast.makeText(this, "Zugang gespeichert. Verbindung wird geprüft …", Toast.LENGTH_SHORT).show();
-                    refreshOctopus();
+                    Toast.makeText(this, "Octopus wird verbunden …", Toast.LENGTH_SHORT).show();
+
+                    if (loginProvided && !tokenProvided) {
+                        refreshOctopus(emailValue, passwordValue);
+                    } else {
+                        refreshOctopus();
+                    }
                     if ("Einstellungen".equals(currentTab)) showTab("Einstellungen");
                 }));
         dialog.show();
@@ -1456,12 +1481,18 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshOctopus() {
+        refreshOctopus("", "");
+    }
+
+    private void refreshOctopus(String email, String password) {
         io.execute(() -> {
             try {
                 OctopusClient client = new OctopusClient(
                         prefs.get("oct_account", ""),
                         prefs.getSecret("oct_api_key"),
                         prefs.getSecret("oct_refresh"),
+                        email,
+                        password,
                         prefs.get("cheap_start", "00:00"),
                         prefs.get("cheap_end", "05:00"),
                         parseDouble(prefs.get("cheap_price", "19"), 19),
@@ -1560,15 +1591,34 @@ public final class MainActivity extends Activity {
     }
 
     private double currentTariffPrice() {
-        return isCheapNow()
+        boolean cheap = isCheapNow();
+        if (octopus != null && octopus.tariffFromApi) {
+            double apiRate = cheap ? octopus.cheapCents : octopus.normalCents;
+            if (Double.isFinite(apiRate)) return apiRate;
+        }
+        return cheap
                 ? parseDouble(prefs.get("cheap_price", "19"), 19)
                 : parseDouble(prefs.get("normal_price", "29"), 29);
     }
 
+    private String currentCheapStart() {
+        if (octopus != null && octopus.cheapStart != null && !octopus.cheapStart.isEmpty()) {
+            return octopus.cheapStart;
+        }
+        return prefs.get("cheap_start", "00:00");
+    }
+
+    private String currentCheapEnd() {
+        if (octopus != null && octopus.cheapEnd != null && !octopus.cheapEnd.isEmpty()) {
+            return octopus.cheapEnd;
+        }
+        return prefs.get("cheap_end", "05:00");
+    }
+
     private boolean isCheapNow() {
         LocalTime now = LocalTime.now(BERLIN);
-        LocalTime start = parseTime(prefs.get("cheap_start", "00:00"), LocalTime.MIDNIGHT);
-        LocalTime end = parseTime(prefs.get("cheap_end", "05:00"), LocalTime.of(5, 0));
+        LocalTime start = parseTime(currentCheapStart(), LocalTime.MIDNIGHT);
+        LocalTime end = parseTime(currentCheapEnd(), LocalTime.of(5, 0));
         if (start.equals(end)) return false;
         if (start.isBefore(end)) return !now.isBefore(start) && now.isBefore(end);
         return !now.isBefore(start) || now.isBefore(end);
