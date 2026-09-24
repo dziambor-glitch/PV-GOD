@@ -54,6 +54,12 @@ public final class OctopusClient {
         public double normalKwh;
         public double estimatedCostEuro;
         public String latestDate = "";
+        public boolean smartMeterExpected;
+        public boolean smartMeterDataAvailable;
+        public int recentIntervalCount;
+        public int historyDayCount;
+        public String latestReadingAt = "";
+        public String measurementSource = "";
         public final List<Interval> intervals = new ArrayList<>();
         public final List<DailyUsage> dailyHistory = new ArrayList<>();
     }
@@ -66,6 +72,7 @@ public final class OctopusClient {
     private static final class AccountContext {
         String propertyId = "";
         String maloNumber = "";
+        boolean smartMeterExpected;
     }
 
     private final SharedPreferences cache;
@@ -142,12 +149,12 @@ public final class OctopusClient {
             return s;
         }
 
-        loadRecentMeasurements(context, auth.token, s);
-
-        double cheapRate = effectiveCheapRate(s);
-        double normalRate = effectiveNormalRate(s);
-        s.estimatedCostEuro =
-                (s.cheapKwh * cheapRate + s.normalKwh * normalRate) / 100.0;
+        try {
+            loadRecentMeasurements(context, auth.token, s);
+        } catch (Exception recentError) {
+            appendNote(s, "Jüngste Smart-Meter-Werte konnten nicht geladen werden: "
+                    + cut(recentError.getMessage()));
+        }
 
         try {
             loadYearHistory(context, auth.token, s);
@@ -156,12 +163,21 @@ public final class OctopusClient {
                     + cut(historyError.getMessage()));
         }
 
-        if (s.intervals.isEmpty()) {
+        if (s.intervals.isEmpty() && !s.dailyHistory.isEmpty()) {
+            applyRecentTotalsFromHistory(s);
+        }
+
+        double cheapRate = effectiveCheapRate(s);
+        double normalRate = effectiveNormalRate(s);
+        s.estimatedCostEuro =
+                (s.cheapKwh * cheapRate + s.normalKwh * normalRate) / 100.0;
+
+        if (!s.smartMeterDataAvailable) {
             appendNote(s,
-                    "Login OK. Octopus hat für den jüngsten Zeitraum noch keine Intervallwerte geliefert.");
+                    "Login OK, aber Octopus hat aktuell keine verwertbaren Smart-Meter-Messwerte geliefert.");
         } else {
             appendNote(s,
-                    "Offizielle Smart-Meter-Intervalle von Octopus; Daten können zeitverzögert eintreffen.");
+                    "Smart-Meter-Daten von Octopus geladen; Messwerte können zeitverzögert eintreffen.");
         }
         return s;
     }
@@ -258,6 +274,7 @@ public final class OctopusClient {
               + "   id"
               + "   electricityMalos {"
               + "    maloNumber"
+              + "    meters { id number meloNumber shouldReceiveSmartMeterData }"
               + "    agreements {"
               + "     isActive isRevoked isTerminated validFrom validTo"
               + "     product { code description fullName isTimeOfUse }"
@@ -310,6 +327,17 @@ public final class OctopusClient {
             for (int m = 0; m < malos.length(); m++) {
                 JSONObject malo = malos.optJSONObject(m);
                 if (malo == null) continue;
+                JSONArray meters = malo.optJSONArray("meters");
+                if (meters != null) {
+                    for (int mi = 0; mi < meters.length(); mi++) {
+                        JSONObject meter = meters.optJSONObject(mi);
+                        if (meter != null && meter.optBoolean("shouldReceiveSmartMeterData", false)) {
+                            context.smartMeterExpected = true;
+                            break;
+                        }
+                    }
+                }
+
                 if (context.propertyId.isEmpty()) {
                     context.propertyId = prop.optString("id", "");
                     context.maloNumber = malo.optString("maloNumber", "");
@@ -329,6 +357,7 @@ public final class OctopusClient {
             if (selectedAgreement != null) break;
         }
 
+        s.smartMeterExpected = context.smartMeterExpected;
         if (selectedAgreement == null) return context;
 
         JSONObject product = selectedAgreement.optJSONObject("product");
@@ -431,10 +460,30 @@ public final class OctopusClient {
                 token,
                 start,
                 end,
-                "RAW_INTERVAL",
+                "HOUR_INTERVAL",
                 100,
                 10,
                 s);
+        String source = "HOUR_INTERVAL";
+
+        if (values.isEmpty()) {
+            values = fetchIntervals(
+                    context,
+                    token,
+                    start,
+                    end,
+                    "RAW_INTERVAL",
+                    100,
+                    10,
+                    s);
+            source = "RAW_INTERVAL";
+        }
+
+        s.recentIntervalCount = values.size();
+        if (!values.isEmpty()) {
+            s.smartMeterDataAvailable = true;
+            s.measurementSource = source;
+        }
 
         Map<String, Double> daily = new LinkedHashMap<>();
         for (Interval in : values) {
@@ -447,6 +496,12 @@ public final class OctopusClient {
             if (zdt != null) {
                 String date = zdt.toLocalDate().toString();
                 daily.put(date, daily.getOrDefault(date, 0.0) + in.kwh);
+                if (s.latestReadingAt.isEmpty()) {
+                    s.latestReadingAt = in.readAt;
+                } else {
+                    ZonedDateTime previous = parseDateTime(s.latestReadingAt);
+                    if (previous == null || zdt.isAfter(previous)) s.latestReadingAt = in.readAt;
+                }
             }
         }
 
@@ -465,6 +520,44 @@ public final class OctopusClient {
             loadHistoryYear(context, token, s, year, today);
         }
         s.dailyHistory.sort((a, b) -> a.date.compareTo(b.date));
+        s.historyDayCount = s.dailyHistory.size();
+        if (!s.dailyHistory.isEmpty()) {
+            s.smartMeterDataAvailable = true;
+            DailyUsage last = s.dailyHistory.get(s.dailyHistory.size() - 1);
+            if (s.latestDate == null || s.latestDate.isEmpty()
+                    || last.date.compareTo(s.latestDate) > 0) {
+                s.latestDate = last.date;
+            }
+            if (s.measurementSource.isEmpty()) s.measurementSource = "HOUR_INTERVAL history";
+        }
+    }
+
+    private void applyRecentTotalsFromHistory(Summary s) {
+        LocalDate latest = null;
+        for (DailyUsage d : s.dailyHistory) {
+            try {
+                LocalDate date = LocalDate.parse(d.date);
+                if (latest == null || date.isAfter(latest)) latest = date;
+            } catch (Exception ignored) {}
+        }
+        if (latest == null) return;
+
+        LocalDate from = latest.minusDays(2);
+        s.totalKwh = 0.0;
+        s.cheapKwh = 0.0;
+        s.normalKwh = 0.0;
+
+        for (DailyUsage d : s.dailyHistory) {
+            LocalDate date;
+            try { date = LocalDate.parse(d.date); }
+            catch (Exception ignored) { continue; }
+            if (date.isBefore(from) || date.isAfter(latest)) continue;
+            s.totalKwh += d.totalKwh;
+            s.cheapKwh += d.cheapKwh;
+            s.normalKwh += d.normalKwh;
+        }
+        s.latestDate = latest.toString();
+        s.measurementSource = "HOUR_INTERVAL history";
     }
 
     private void loadHistoryYear(AccountContext context, String token, Summary s,

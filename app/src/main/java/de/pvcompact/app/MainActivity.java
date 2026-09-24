@@ -282,7 +282,9 @@ public final class MainActivity extends Activity {
                 yesterday.hasOctopus
                         ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.normalKwh)
                         : "—",
-                "außerhalb " + currentCheapStart() + "–" + currentCheapEnd(),
+                yesterday.hasOctopus
+                        ? "außerhalb " + currentCheapStart() + "–" + currentCheapEnd()
+                        : "Octopus-Daten für gestern noch nicht da",
                 UiKit.BLUE,
                 UiKit.BLUE_SOFT), metricLp(false));
         content.addView(yesterdayRow1);
@@ -294,7 +296,9 @@ public final class MainActivity extends Activity {
                 yesterday.hasOctopus
                         ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.cheapKwh)
                         : "—",
-                currentCheapStart() + "–" + currentCheapEnd(),
+                yesterday.hasOctopus
+                        ? currentCheapStart() + "–" + currentCheapEnd()
+                        : "Octopus-Daten für gestern noch nicht da",
                 UiKit.PURPLE,
                 UiKit.PURPLE_SOFT), metricLp(true));
         yesterdayRow2.addView(metric(
@@ -302,7 +306,9 @@ public final class MainActivity extends Activity {
                 yesterday.hasOctopus
                         ? String.format(Locale.GERMANY, "%.2f €", yesterday.costEuro)
                         : "—",
-                "Netzbezug gestern · geschätzt",
+                yesterday.hasOctopus
+                        ? "Netzbezug gestern · geschätzt"
+                        : "Octopus-Daten für gestern noch nicht da",
                 UiKit.AMBER,
                 UiKit.AMBER_SOFT), metricLp(false));
         content.addView(yesterdayRow2);
@@ -315,8 +321,18 @@ public final class MainActivity extends Activity {
         statusCard.addView(statusLine("Wetter & PV-Forecast", !forecast.isEmpty(),
                 !forecast.isEmpty() ? "aktuell" : (forecastError.isEmpty() ? "nicht eingerichtet" : "Fehler")));
         statusCard.addView(UiKit.divider(this), dividerLp());
-        statusCard.addView(statusLine("Octopus Energy", octopus != null,
-                octopus != null ? "Smart-Meter geladen" : (octopusError.isEmpty() ? "optional" : "Fehler")));
+        boolean smartMeterOk = octopus != null && octopus.smartMeterDataAvailable;
+        String octopusStatus;
+        if (smartMeterOk) {
+            octopusStatus = octopus.latestDate == null || octopus.latestDate.isEmpty()
+                    ? "Smart-Meter-Messwerte geladen"
+                    : "Messwerte bis " + friendlyOctopusDate(octopus.latestDate);
+        } else if (octopus != null) {
+            octopusStatus = "verbunden · noch keine Smart-Meter-Messwerte";
+        } else {
+            octopusStatus = octopusError.isEmpty() ? "optional" : "Fehler";
+        }
+        statusCard.addView(statusLine("Octopus Energy", smartMeterOk, octopusStatus));
         statusCard.addView(UiKit.divider(this), dividerLp());
         boolean pi = !prefs.get("controller_url", "").isEmpty();
         statusCard.addView(statusLine("Raspberry Controller", pi,
@@ -794,27 +810,55 @@ public final class MainActivity extends Activity {
 
         if (octopus != null) {
             content.addView(UiKit.sectionTitle(this, "Smart-Meter"));
+            boolean meterData = octopus.smartMeterDataAvailable;
+            String recentDetail = octopus.recentIntervalCount > 0
+                    ? octopus.recentIntervalCount + " Messintervalle · " + octopus.measurementSource
+                    : (octopus.historyDayCount > 0
+                            ? "aus Tageshistorie · " + octopus.historyDayCount + " Tage"
+                            : "Octopus hat noch keine Messwerte geliefert");
+
             LinearLayout r1 = UiKit.row(this);
             r1.addView(metric("NETZBEZUG",
-                    String.format(Locale.GERMANY, "%.2f kWh", octopus.totalKwh),
-                    "letzte geladene Intervalle",
+                    meterData ? String.format(Locale.GERMANY, "%.2f kWh", octopus.totalKwh) : "—",
+                    recentDetail,
                     UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(true));
             r1.addView(metric("KOSTEN",
-                    String.format(Locale.GERMANY, "%.2f €", octopus.estimatedCostEuro),
-                    "geschätzt aus Go-Tarif",
+                    meterData ? String.format(Locale.GERMANY, "%.2f €", octopus.estimatedCostEuro) : "—",
+                    meterData ? "geschätzt aus Go-Tarif" : "keine validen Messwerte",
                     UiKit.GREEN, UiKit.MINT), metricLp(false));
             content.addView(r1);
 
             LinearLayout r2 = UiKit.row(this);
             r2.addView(metric("NEBENZEIT",
-                    String.format(Locale.GERMANY, "%.2f kWh", octopus.cheapKwh),
-                    prefs.get("cheap_start", "00:00") + "–" + prefs.get("cheap_end", "05:00"),
+                    meterData ? String.format(Locale.GERMANY, "%.2f kWh", octopus.cheapKwh) : "—",
+                    meterData ? currentCheapStart() + "–" + currentCheapEnd() : "noch nicht verfügbar",
                     UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(true));
             r2.addView(metric("HAUPTZEIT",
-                    String.format(Locale.GERMANY, "%.2f kWh", octopus.normalKwh),
-                    "außerhalb des Fensters",
+                    meterData ? String.format(Locale.GERMANY, "%.2f kWh", octopus.normalKwh) : "—",
+                    meterData ? "außerhalb des Fensters" : "noch nicht verfügbar",
                     UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
             content.addView(r2);
+
+            LinearLayout diagnostic = UiKit.card(this);
+            diagnostic.addView(UiKit.overline(this, "SMART-METER PRÜFUNG",
+                    meterData ? UiKit.GREEN : UiKit.AMBER));
+            String meterExpected = octopus.smartMeterExpected
+                    ? "von Octopus als Smart-Meter-Datenquelle bestätigt"
+                    : "im Konto nicht eindeutig als Smart Meter bestätigt";
+            String last = octopus.latestReadingAt != null && !octopus.latestReadingAt.isEmpty()
+                    ? friendlyOctopusDateTime(octopus.latestReadingAt)
+                    : (octopus.latestDate != null && !octopus.latestDate.isEmpty()
+                            ? friendlyOctopusDate(octopus.latestDate)
+                            : "—");
+            TextView diag = UiKit.caption(this,
+                    "Zählerstatus: " + meterExpected
+                            + "\nMesswerte verfügbar: " + (meterData ? "ja" : "nein")
+                            + "\nLetzter verfügbarer Wert: " + last
+                            + "\nHistorientage: " + octopus.historyDayCount);
+            diag.setLineSpacing(0, 1.14f);
+            diag.setPadding(0, dp(6), 0, 0);
+            diagnostic.addView(diag);
+            content.addView(diagnostic);
 
             LinearLayout note = UiKit.card(this);
             note.addView(UiKit.overline(this, "STATUS", UiKit.GREEN));
@@ -864,7 +908,7 @@ public final class MainActivity extends Activity {
     private void showStatistics() {
         pageHeader("Statistik", "Deine Energie-Bilanz über Monate und Jahre");
 
-        if (pv == null || octopus == null) {
+        if (pv == null || octopus == null || !octopus.smartMeterDataAvailable) {
             LinearLayout missing = UiKit.card(this);
             missing.addView(UiKit.overline(this, "DATENBASIS", UiKit.AMBER));
             TextView title = UiKit.text(this, "PVOutput und Octopus werden benötigt", 19, UiKit.INK);
@@ -879,10 +923,10 @@ public final class MainActivity extends Activity {
         }
 
         List<EnergyPeriod> months = monthlyEnergyPeriodsChronological();
-        List<EnergyPeriod> allYears = yearlyEnergyPeriodsChronological();
-        EnergyPeriod overall = overallEnergyPeriod(allYears);
+        EnergyPeriod overall = currentYearEnergyPeriod();
+        int currentYear = LocalDate.now(BERLIN).getYear();
 
-        content.addView(UiKit.sectionTitle(this, "Gesamt verfügbar"));
+        content.addView(UiKit.sectionTitle(this, currentYear + " bisher"));
 
         LinearLayout r1 = UiKit.row(this);
         r1.setBaselineAligned(false);
@@ -906,7 +950,7 @@ public final class MainActivity extends Activity {
                 overall.hasPv
                         ? String.format(Locale.GERMANY, "%.0f kWh", overall.pvKwh)
                         : "—",
-                "PVOutput · Null-Einspeisung",
+                "PVOutput · " + LocalDate.now(BERLIN).getYear() + " bisher",
                 UiKit.GREEN, UiKit.MINT), metricLp(true));
         r2.addView(metric("KOSTEN",
                 overall.hasOctopus
@@ -918,7 +962,9 @@ public final class MainActivity extends Activity {
 
         TextView note = UiKit.caption(this,
                 "Autarkie ist eine Näherung aus PV-Ertrag ÷ (PV-Ertrag + Netzbezug). "
-                        + "Bei deiner Null-Einspeisung ist das eine praktische Kennzahl. "
+                        + "Die obere Zusammenfassung bezieht sich nur auf das aktuelle Jahr. "
+                        + octopusCoverageText()
+                        + " Bei deiner Null-Einspeisung ist das eine praktische Kennzahl; "
                         + "Batterie-Ladezustand an Periodengrenzen und Umwandlungsverluste können den Wert leicht verschieben.");
         note.setPadding(dp(4), 0, dp(4), dp(8));
         content.addView(note);
@@ -1053,6 +1099,62 @@ public final class MainActivity extends Activity {
         List<EnergyPeriod> out = yearlyEnergyPeriods();
         Collections.reverse(out);
         return out;
+    }
+
+    private EnergyPeriod currentYearEnergyPeriod() {
+        int year = LocalDate.now(BERLIN).getYear();
+        EnergyPeriod p = energyForRange(
+                LocalDate.of(year, 1, 1),
+                LocalDate.of(year, 12, 31),
+                year + " bisher");
+        p.pvKwh = pvForYear(year);
+        p.hasPv = hasPvYear(year);
+        return p;
+    }
+
+    private String octopusCoverageText() {
+        if (octopus == null || octopus.dailyHistory.isEmpty()) {
+            return "Für Octopus liegen noch keine historischen Messwerte vor.";
+        }
+        int year = LocalDate.now(BERLIN).getYear();
+        LocalDate earliest = null;
+        LocalDate latest = null;
+        for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+            try {
+                LocalDate date = LocalDate.parse(d.date);
+                if (date.getYear() != year) continue;
+                if (earliest == null || date.isBefore(earliest)) earliest = date;
+                if (latest == null || date.isAfter(latest)) latest = date;
+            } catch (Exception ignored) {}
+        }
+        if (earliest == null || latest == null) {
+            return "Für " + year + " liegen noch keine Octopus-Messwerte vor.";
+        }
+        return "Octopus-Abdeckung: "
+                + earliest.format(DateTimeFormatter.ofPattern("dd.MM."))
+                + "–" + latest.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")) + ".";
+    }
+
+    private String friendlyOctopusDate(String value) {
+        if (value == null || value.isEmpty()) return "—";
+        try {
+            return LocalDate.parse(value).format(DateTimeFormatter.ofPattern("dd.MM.yyyy"));
+        } catch (Exception ignored) {
+            return value;
+        }
+    }
+
+    private String friendlyOctopusDateTime(String value) {
+        if (value == null || value.isEmpty()) return "—";
+        try {
+            return java.time.Instant.parse(value).atZone(BERLIN)
+                    .format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
+        } catch (Exception ignored) {}
+        try {
+            return java.time.OffsetDateTime.parse(value).atZoneSameInstant(BERLIN)
+                    .format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
+        } catch (Exception ignored) {}
+        return value;
     }
 
     private EnergyPeriod overallEnergyPeriod(List<EnergyPeriod> months) {
@@ -1942,6 +2044,7 @@ public final class MainActivity extends Activity {
         }
 
         if (octopus != null) {
+            boolean foundDaily = false;
             for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
                 LocalDate date;
                 try {
@@ -1955,11 +2058,34 @@ public final class MainActivity extends Activity {
                 p.cheapKwh += d.cheapKwh;
                 p.normalKwh += d.normalKwh;
                 p.hasOctopus = true;
+                foundDaily = true;
+            }
+
+            if (!foundDaily) {
+                for (OctopusClient.Interval in : octopus.intervals) {
+                    LocalDate date = octopusIntervalDate(in.readAt);
+                    if (date == null || date.isBefore(start) || date.isAfter(end)) continue;
+                    p.gridKwh += in.kwh;
+                    if (in.cheap) p.cheapKwh += in.kwh;
+                    else p.normalKwh += in.kwh;
+                    p.hasOctopus = true;
+                }
             }
         }
 
         p.costEuro = historyCost(p.cheapKwh, p.normalKwh);
         return p;
+    }
+
+    private LocalDate octopusIntervalDate(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return java.time.Instant.parse(value).atZone(BERLIN).toLocalDate();
+        } catch (Exception ignored) {}
+        try {
+            return java.time.OffsetDateTime.parse(value).atZoneSameInstant(BERLIN).toLocalDate();
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private LocalDate parsePvDate(String value) {

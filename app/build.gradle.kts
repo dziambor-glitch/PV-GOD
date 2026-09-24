@@ -10,8 +10,8 @@ android {
         applicationId = "de.pvcompact.app.clean"
         minSdk = 26
         targetSdk = 36
-        versionCode = 171
-        versionName = "1.7.1"
+        versionCode = 172
+        versionName = "1.7.2"
     }
 
     buildTypes {
