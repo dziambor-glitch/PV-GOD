@@ -62,6 +62,22 @@ public final class OctopusClient {
         public double normalKwh;
     }
 
+    public static final class MeterRegisterSummary {
+        public boolean available;
+        public String meterId = "";
+        public String meterNumber = "";
+        public String meterType = "";
+        public String obisCode = "";
+        public String registerType = "";
+        public double currentValue = Double.NaN;
+        public String currentReadAt = "";
+        public String currentTypeOfRead = "";
+        public String currentOrigin = "";
+        public double earliestValue = Double.NaN;
+        public String earliestReadAt = "";
+        public int readingCount;
+    }
+
     public static final class Summary {
         public boolean authenticated;
         public String refreshedToken = "";
@@ -87,6 +103,7 @@ public final class OctopusClient {
         public String latestReadingAt = "";
         public String measurementSource = "";
         public DayValidation dayValidation;
+        public MeterRegisterSummary meterRegister;
         public final List<Interval> intervals = new ArrayList<>();
         public final List<DailyUsage> dailyHistory = new ArrayList<>();
     }
@@ -174,6 +191,13 @@ public final class OctopusClient {
                     "Strom-Zählpunkt konnte noch nicht aus dem Octopus-Konto gelesen werden. "
                             + "Das bedeutet nicht automatisch, dass kein Smart Meter vorhanden ist.");
             return s;
+        }
+
+        try {
+            loadMeterRegisterSnapshot(resolvedAccount, context, auth.token, s);
+        } catch (Exception meterReadingError) {
+            appendNote(s, "Aktueller Zählerstand konnte nicht gelesen werden: "
+                    + cut(meterReadingError.getMessage()));
         }
 
         try {
@@ -481,6 +505,160 @@ public final class OctopusClient {
             }
         }
         return fallback;
+    }
+
+    private void loadMeterRegisterSnapshot(
+            String accountNumber, AccountContext context, String token, Summary s)
+            throws Exception {
+
+        String query =
+                "query GetPvCompactMeterRegisters($accountNumber: String!, $propertyId: ID!) {"
+              + " account(accountNumber: $accountNumber) {"
+              + "  property(id: $propertyId) {"
+              + "   electricityMalos {"
+              + "    maloNumber"
+              + "    meters {"
+              + "     id number meterType meloNumber shouldReceiveSmartMeterData"
+              + "     registers {"
+              + "      obisCode registerType"
+              + "      readings(first: 24) {"
+              + "       edges { node { value readAt typeOfRead origin } }"
+              + "      }"
+              + "     }"
+              + "    }"
+              + "   }"
+              + "  }"
+              + " }"
+              + "}";
+
+        JSONObject vars = new JSONObject()
+                .put("accountNumber", accountNumber)
+                .put("propertyId", context.propertyId);
+        JSONObject root = post(query, vars, token);
+
+        JSONObject data = root.optJSONObject("data");
+        JSONObject accountObj = data == null ? null : data.optJSONObject("account");
+        JSONObject property = accountObj == null ? null : accountObj.optJSONObject("property");
+        String err = firstError(root);
+
+        if (property == null) {
+            if (err != null) throw new IllegalStateException("Zählerstand: " + err);
+            return;
+        }
+        if (err != null) {
+            appendNote(s,
+                    "Octopus hat bei einzelnen Zählerstand-Feldern eingeschränkten Zugriff gemeldet; "
+                            + "verfügbare Registerwerte werden trotzdem verwendet.");
+        }
+
+        JSONArray malos = property.optJSONArray("electricityMalos");
+        if (malos == null) return;
+
+        MeterRegisterSummary best = null;
+        int bestScore = Integer.MIN_VALUE;
+        ZonedDateTime bestLatest = null;
+
+        for (int mi = 0; mi < malos.length(); mi++) {
+            JSONObject malo = malos.optJSONObject(mi);
+            if (malo == null) continue;
+            JSONArray meters = malo.optJSONArray("meters");
+            if (meters == null) continue;
+
+            for (int m = 0; m < meters.length(); m++) {
+                JSONObject meter = meters.optJSONObject(m);
+                if (meter == null) continue;
+                JSONArray registers = meter.optJSONArray("registers");
+                if (registers == null) continue;
+
+                for (int ri = 0; ri < registers.length(); ri++) {
+                    JSONObject register = registers.optJSONObject(ri);
+                    if (register == null) continue;
+
+                    String obis = safe(register.optString("obisCode", ""));
+                    String registerType = safe(register.optString("registerType", ""));
+                    int score = importRegisterScore(obis, registerType);
+                    if (score < 0) continue;
+
+                    JSONObject readings = register.optJSONObject("readings");
+                    JSONArray edges = readings == null ? null : readings.optJSONArray("edges");
+                    if (edges == null || edges.length() == 0) continue;
+
+                    JSONObject latestNode = null;
+                    JSONObject earliestNode = null;
+                    ZonedDateTime latestTime = null;
+                    ZonedDateTime earliestTime = null;
+                    int validCount = 0;
+
+                    for (int ei = 0; ei < edges.length(); ei++) {
+                        JSONObject edge = edges.optJSONObject(ei);
+                        JSONObject node = edge == null ? null : edge.optJSONObject("node");
+                        if (node == null) continue;
+
+                        double value = node.optDouble("value", Double.NaN);
+                        String readAt = safe(node.optString("readAt", ""));
+                        ZonedDateTime when = parseDateTime(readAt);
+                        if (!Double.isFinite(value) || when == null) continue;
+                        validCount++;
+
+                        if (latestTime == null || when.isAfter(latestTime)) {
+                            latestTime = when;
+                            latestNode = node;
+                        }
+                        if (earliestTime == null || when.isBefore(earliestTime)) {
+                            earliestTime = when;
+                            earliestNode = node;
+                        }
+                    }
+
+                    if (latestNode == null || latestTime == null) continue;
+
+                    boolean better = best == null
+                            || score > bestScore
+                            || (score == bestScore
+                                && (bestLatest == null || latestTime.isAfter(bestLatest)));
+                    if (!better) continue;
+
+                    MeterRegisterSummary candidate = new MeterRegisterSummary();
+                    candidate.available = true;
+                    candidate.meterId = safe(meter.optString("id", ""));
+                    candidate.meterNumber = safe(meter.optString("number", ""));
+                    candidate.meterType = safe(meter.optString("meterType", ""));
+                    candidate.obisCode = obis;
+                    candidate.registerType = registerType;
+                    candidate.currentValue = latestNode.optDouble("value", Double.NaN);
+                    candidate.currentReadAt = safe(latestNode.optString("readAt", ""));
+                    candidate.currentTypeOfRead = safe(latestNode.optString("typeOfRead", ""));
+                    candidate.currentOrigin = safe(latestNode.optString("origin", ""));
+                    candidate.readingCount = validCount;
+
+                    if (earliestNode != null && earliestTime != null) {
+                        candidate.earliestValue =
+                                earliestNode.optDouble("value", Double.NaN);
+                        candidate.earliestReadAt =
+                                safe(earliestNode.optString("readAt", ""));
+                    }
+
+                    best = candidate;
+                    bestScore = score;
+                    bestLatest = latestTime;
+                }
+            }
+        }
+
+        if (best != null) s.meterRegister = best;
+    }
+
+    private int importRegisterScore(String obisCode, String registerType) {
+        String obis = obisCode == null ? "" : obisCode.toUpperCase();
+        String type = registerType == null ? "" : registerType.toUpperCase();
+
+        if (obis.contains("2.8.") || type.contains("EXPORT")) return -1000;
+
+        int score = 0;
+        if (obis.contains("1.8.0")) score += 100;
+        else if (obis.contains("1.8.")) score += 80;
+        if (type.contains("IMPORT") || type.contains("CONSUM")) score += 50;
+        return score;
     }
 
     private void loadRecentMeasurements(AccountContext context, String token, Summary s)

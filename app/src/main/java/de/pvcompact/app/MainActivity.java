@@ -995,6 +995,7 @@ public final class MainActivity extends Activity {
                     "Für die Gesamtstatistik kombiniert PV Compact deinen PV-Ertrag aus PVOutput "
                             + "mit dem Netzbezug aus dem Octopus Smart Meter."));
             content.addView(missing);
+            addVersionFooter();
             return;
         }
 
@@ -1045,10 +1046,13 @@ public final class MainActivity extends Activity {
         note.setPadding(dp(4), 0, dp(4), dp(8));
         content.addView(note);
 
+        showMeterRegisterStatistics();
+
         if (months.isEmpty()) {
             LinearLayout empty = UiKit.card(this);
             empty.addView(UiKit.caption(this, "Noch keine Monatsdaten verfügbar."));
             content.addView(empty);
+            addVersionFooter();
             return;
         }
 
@@ -1111,6 +1115,174 @@ public final class MainActivity extends Activity {
         Button refresh = UiKit.primaryButton(this, "Statistik aktualisieren");
         refresh.setOnClickListener(v -> refreshAll());
         content.addView(refresh, buttonLp());
+
+        addVersionFooter();
+    }
+
+    private void showMeterRegisterStatistics() {
+        content.addView(UiKit.sectionTitle(this, "Zähler & Datenabgleich"));
+
+        LinearLayout card = UiKit.card(this);
+        card.addView(UiKit.overline(this, "OCTOPUS ZÄHLERREGISTER", UiKit.BLUE));
+
+        OctopusClient.MeterRegisterSummary m =
+                octopus == null ? null : octopus.meterRegister;
+
+        if (m == null || !m.available || !Double.isFinite(m.currentValue)) {
+            TextView missing = UiKit.caption(this,
+                    "Octopus liefert aktuell keinen kumulierten Register-Zählerstand. "
+                            + "Die Intervallstatistik bleibt davon unabhängig verfügbar.");
+            missing.setPadding(0, dp(7), 0, 0);
+            card.addView(missing);
+            content.addView(card);
+            return;
+        }
+
+        String meterLabel = m.meterNumber == null || m.meterNumber.isEmpty()
+                ? "Stromzähler"
+                : "Stromzähler " + maskedMeterNumber(m.meterNumber);
+        TextView h = UiKit.text(this,
+                String.format(Locale.GERMANY, "%.1f kWh", m.currentValue),
+                28, UiKit.INK);
+        h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        h.setPadding(0, dp(7), 0, dp(3));
+        card.addView(h);
+
+        String latestAt = friendlyOctopusDateTime(m.currentReadAt);
+        String registerInfo = meterLabel
+                + " · " + (m.obisCode == null || m.obisCode.isEmpty() ? "Register" : "OBIS " + m.obisCode)
+                + "\nLetzter Registerstand: " + latestAt;
+        if (m.currentTypeOfRead != null && !m.currentTypeOfRead.isEmpty()) {
+            registerInfo += " · " + m.currentTypeOfRead;
+        }
+        TextView info = UiKit.caption(this, registerInfo);
+        info.setLineSpacing(0, 1.12f);
+        card.addView(info);
+
+        LocalDate latestDate = parseOctopusDateTimeToDate(m.currentReadAt);
+        LocalDate earliestDate = parseOctopusDateTimeToDate(m.earliestReadAt);
+
+        if (Double.isFinite(m.earliestValue)
+                && earliestDate != null
+                && latestDate != null
+                && !latestDate.isBefore(earliestDate)
+                && m.currentValue >= m.earliestValue) {
+
+            double registerDelta = m.currentValue - m.earliestValue;
+            EnergyPeriod interval = energyForRange(
+                    earliestDate, latestDate, "Registervergleich");
+            double intervalKwh = interval.hasOctopus ? interval.gridKwh : Double.NaN;
+            double difference = Double.isFinite(intervalKwh)
+                    ? registerDelta - intervalKwh
+                    : Double.NaN;
+
+            card.addView(UiKit.divider(this), dividerLp());
+
+            TextView compare = UiKit.caption(this,
+                    "Ältester verfügbarer Registerstand: "
+                            + String.format(Locale.GERMANY, "%.1f kWh", m.earliestValue)
+                            + " · " + earliestDate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+                            + "\nRegister-Verbrauch im gleichen Zeitraum: "
+                            + String.format(Locale.GERMANY, "%.1f kWh", registerDelta)
+                            + "\nIntervallsumme im gleichen Zeitraum: "
+                            + (Double.isFinite(intervalKwh)
+                                ? String.format(Locale.GERMANY, "%.1f kWh", intervalKwh)
+                                : "—")
+                            + "\nDifferenz Register – Intervalle: "
+                            + (Double.isFinite(difference)
+                                ? String.format(Locale.GERMANY, "%+.1f kWh", difference)
+                                : "—"));
+            compare.setLineSpacing(0, 1.15f);
+            card.addView(compare);
+        } else {
+            LocalDate firstHistory = earliestOctopusHistoryDate();
+            LocalDate lastHistory = latestOctopusHistoryDate();
+            if (firstHistory != null && lastHistory != null) {
+                EnergyPeriod interval = energyForRange(firstHistory, lastHistory, "Historie");
+                card.addView(UiKit.divider(this), dividerLp());
+                TextView compare = UiKit.caption(this,
+                        "Verfügbare Intervallsumme: "
+                                + String.format(Locale.GERMANY, "%.1f kWh", interval.gridKwh)
+                                + " · " + firstHistory.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+                                + "–" + lastHistory.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+                                + "\nDer kumulierte Zählerstand ist nicht direkt mit dieser Summe vergleichbar, "
+                                + "solange Octopus keinen älteren Registerstand desselben Zählers liefert.");
+                compare.setLineSpacing(0, 1.15f);
+                card.addView(compare);
+            }
+        }
+
+        TextView hint = UiKit.caption(this,
+                "Wichtig: Zählerstand = kumuliertes Register. Netzbezug in den Statistiken = Summe der von Octopus gelieferten Zeitintervalle. "
+                        + "Eine Differenz weist daher zunächst auf unterschiedliche Datenabdeckung oder einen fehlenden Start-Registerstand hin, nicht automatisch auf einen Abrechnungsfehler.");
+        hint.setPadding(0, dp(9), 0, 0);
+        card.addView(hint);
+
+        content.addView(card);
+    }
+
+    private LocalDate earliestOctopusHistoryDate() {
+        if (octopus == null || octopus.dailyHistory.isEmpty()) return null;
+        LocalDate earliest = null;
+        for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+            try {
+                LocalDate date = LocalDate.parse(d.date);
+                if (earliest == null || date.isBefore(earliest)) earliest = date;
+            } catch (Exception ignored) {}
+        }
+        return earliest;
+    }
+
+    private LocalDate latestOctopusHistoryDate() {
+        if (octopus == null || octopus.dailyHistory.isEmpty()) return null;
+        LocalDate latest = null;
+        for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+            try {
+                LocalDate date = LocalDate.parse(d.date);
+                if (latest == null || date.isAfter(latest)) latest = date;
+            } catch (Exception ignored) {}
+        }
+        return latest;
+    }
+
+    private LocalDate parseOctopusDateTimeToDate(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return java.time.Instant.parse(value).atZone(BERLIN).toLocalDate();
+        } catch (Exception ignored) {}
+        try {
+            return java.time.OffsetDateTime.parse(value).atZoneSameInstant(BERLIN).toLocalDate();
+        } catch (Exception ignored) {}
+        try {
+            return LocalDate.parse(value);
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String maskedMeterNumber(String number) {
+        if (number == null || number.isEmpty()) return "";
+        String n = number.trim();
+        if (n.length() <= 4) return n;
+        return "…" + n.substring(n.length() - 4);
+    }
+
+    private void addVersionFooter() {
+        TextView footer = UiKit.caption(this,
+                "PV Compact · Version " + appVersionName());
+        footer.setGravity(Gravity.CENTER);
+        footer.setPadding(dp(8), dp(12), dp(8), dp(18));
+        content.addView(footer);
+    }
+
+    private String appVersionName() {
+        try {
+            android.content.pm.PackageInfo info =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            String version = info.versionName;
+            return version == null || version.trim().isEmpty() ? "—" : version;
+        } catch (Exception ignored) {
+            return "—";
+        }
     }
 
     private void addStatsChartCard(String title, String detail, SimpleEnergyChartView chart) {
