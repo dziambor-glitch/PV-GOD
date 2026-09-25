@@ -741,7 +741,7 @@ public final class OctopusClient {
         String tariffKey =
                 currentCheapStart(s) + "_" + currentCheapEnd(s) + "_"
                         + effectiveCheapRate(s) + "_" + effectiveNormalRate(s);
-        return Integer.toUnsignedString(
+        return "v2_" + Integer.toUnsignedString(
                 (accountNumber + "_" + year + "_" + tariffKey).hashCode());
     }
 
