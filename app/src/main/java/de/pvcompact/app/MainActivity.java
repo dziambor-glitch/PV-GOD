@@ -876,6 +876,45 @@ public final class MainActivity extends Activity {
                 content.addView(daysCard);
             }
 
+            if (octopus.dayValidation != null) {
+                OctopusClient.DayValidation v = octopus.dayValidation;
+                LinearLayout validation = UiKit.card(this);
+                validation.addView(UiKit.overline(this,
+                        v.consistent ? "TAGESWERT BESTÄTIGT" : "TAGESWERT ABWEICHUNG",
+                        v.consistent ? UiKit.GREEN : UiKit.AMBER));
+                String date = friendlyOctopusDate(v.date);
+                TextView vh = UiKit.text(this, date + " · Plausibilitätscheck", 17, UiKit.INK);
+                vh.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                vh.setPadding(0, dp(7), 0, dp(5));
+                validation.addView(vh);
+
+                String hour = v.hourCount > 0
+                        ? String.format(Locale.GERMANY, "Stunde: %.2f kWh · %d Werte", v.hourKwh, v.hourCount)
+                        : "Stunde: —";
+                String raw = v.rawCount > 0
+                        ? String.format(Locale.GERMANY, "15 Min: %.2f kWh · %d Werte", v.rawKwh, v.rawCount)
+                        : "15 Min: —";
+                String day = v.dayCount > 0
+                        ? String.format(Locale.GERMANY, "Tag: %.2f kWh · %d Wert(e)", v.dayKwh, v.dayCount)
+                        : "Tag: —";
+
+                String meta = "";
+                if (v.source != null && !v.source.isEmpty()) meta += "\nQuelle: " + v.source;
+                if (v.quality != null && !v.quality.isEmpty()) meta += " · Qualität: " + v.quality;
+                if (v.direction != null && !v.direction.isEmpty()) meta += " · Richtung: " + v.direction;
+
+                TextView vd = UiKit.caption(this,
+                        hour + "\n" + raw + "\n" + day
+                                + "\nVerwendet: " + (v.preferredSource == null || v.preferredSource.isEmpty()
+                                    ? "—"
+                                    : v.preferredSource + " · "
+                                        + String.format(Locale.GERMANY, "%.2f kWh", v.preferredKwh))
+                                + "\n" + v.note + meta);
+                vd.setLineSpacing(0, 1.14f);
+                validation.addView(vd);
+                content.addView(validation);
+            }
+
             LinearLayout diagnostic = UiKit.card(this);
             diagnostic.addView(UiKit.overline(this, "SMART-METER PRÜFUNG",
                     meterData ? UiKit.GREEN : UiKit.AMBER));
@@ -2085,9 +2124,22 @@ public final class MainActivity extends Activity {
             boolean singleDay = start != null && start.equals(end);
             boolean foundIntervals = false;
 
+            if (singleDay && octopus.dayValidation != null
+                    && start.toString().equals(octopus.dayValidation.date)
+                    && octopus.dayValidation.preferredSource != null
+                    && !octopus.dayValidation.preferredSource.isEmpty()) {
+                OctopusClient.DayValidation v = octopus.dayValidation;
+                p.gridKwh = v.preferredKwh;
+                p.cheapKwh = v.preferredCheapKwh;
+                p.normalKwh = v.preferredNormalKwh;
+                p.intervalCount = v.preferredCount;
+                p.hasOctopus = true;
+                foundIntervals = true;
+            }
+
             // For a single day, prefer the actual recent hourly intervals.
             // They are fresher and must win over potentially stale/zero cached daily sums.
-            if (singleDay) {
+            if (singleDay && !foundIntervals) {
                 for (OctopusClient.Interval in : octopus.intervals) {
                     LocalDate date = octopusIntervalDate(in.readAt);
                     if (date == null || !date.equals(start)) continue;
@@ -2215,6 +2267,15 @@ public final class MainActivity extends Activity {
         if (octopus == null || notAfter == null) return null;
 
         LocalDate latest = null;
+
+        if (octopus.dayValidation != null
+                && octopus.dayValidation.date != null
+                && !octopus.dayValidation.date.isEmpty()) {
+            try {
+                LocalDate checked = LocalDate.parse(octopus.dayValidation.date);
+                if (!checked.isAfter(notAfter)) latest = checked;
+            } catch (Exception ignored) {}
+        }
 
         // Prefer the latest date backed by actual hourly intervals.
         for (OctopusClient.Interval in : octopus.intervals) {
