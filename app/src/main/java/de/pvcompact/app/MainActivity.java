@@ -261,11 +261,19 @@ public final class MainActivity extends Activity {
                 metricLp(false));
         content.addView(row2);
 
-        content.addView(UiKit.sectionTitle(this, "Gestern"));
+        LocalDate yesterdayDate = LocalDate.now(BERLIN).minusDays(1);
         EnergyPeriod yesterday = energyForRange(
-                LocalDate.now(BERLIN).minusDays(1),
-                LocalDate.now(BERLIN).minusDays(1),
+                yesterdayDate,
+                yesterdayDate,
                 "Gestern");
+        EnergyPeriod gridDay = yesterday.hasOctopus
+                ? yesterday
+                : latestAvailableGridDay(yesterdayDate);
+        boolean gridIsYesterday = gridDay != null
+                && yesterdayDate.equals(gridDay.date);
+
+        content.addView(UiKit.sectionTitle(this,
+                gridIsYesterday ? "Gestern" : "Gestern / letzter Netzstand"));
 
         LinearLayout yesterdayRow1 = UiKit.row(this);
         yesterdayRow1.setBaselineAligned(false);
@@ -279,12 +287,12 @@ public final class MainActivity extends Activity {
                 UiKit.MINT), metricLp(true));
         yesterdayRow1.addView(metric(
                 "NETZ HAUPTZEIT",
-                yesterday.hasOctopus
-                        ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.normalKwh)
+                gridDay != null && gridDay.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f kWh", gridDay.normalKwh)
                         : "—",
-                yesterday.hasOctopus
-                        ? "außerhalb " + currentCheapStart() + "–" + currentCheapEnd()
-                        : "Octopus-Daten für gestern noch nicht da",
+                gridDay != null && gridDay.hasOctopus
+                        ? gridDayDetail(gridDay, "Hauptzeit")
+                        : "Noch keine Octopus-Messwerte verfügbar",
                 UiKit.BLUE,
                 UiKit.BLUE_SOFT), metricLp(false));
         content.addView(yesterdayRow1);
@@ -293,22 +301,22 @@ public final class MainActivity extends Activity {
         yesterdayRow2.setBaselineAligned(false);
         yesterdayRow2.addView(metric(
                 "NETZ NEBENZEIT",
-                yesterday.hasOctopus
-                        ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.cheapKwh)
+                gridDay != null && gridDay.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f kWh", gridDay.cheapKwh)
                         : "—",
-                yesterday.hasOctopus
-                        ? currentCheapStart() + "–" + currentCheapEnd()
-                        : "Octopus-Daten für gestern noch nicht da",
+                gridDay != null && gridDay.hasOctopus
+                        ? gridDayDetail(gridDay, "Nebenzeit")
+                        : "Noch keine Octopus-Messwerte verfügbar",
                 UiKit.PURPLE,
                 UiKit.PURPLE_SOFT), metricLp(true));
         yesterdayRow2.addView(metric(
                 "KOSTEN",
-                yesterday.hasOctopus
-                        ? String.format(Locale.GERMANY, "%.2f €", yesterday.costEuro)
+                gridDay != null && gridDay.hasOctopus
+                        ? String.format(Locale.GERMANY, "%.2f €", gridDay.costEuro)
                         : "—",
-                yesterday.hasOctopus
-                        ? "Netzbezug gestern · geschätzt"
-                        : "Octopus-Daten für gestern noch nicht da",
+                gridDay != null && gridDay.hasOctopus
+                        ? "Netzbezug " + gridDayDisplayDate(gridDay) + " · geschätzt"
+                        : "Noch keine Octopus-Messwerte verfügbar",
                 UiKit.AMBER,
                 UiKit.AMBER_SOFT), metricLp(false));
         content.addView(yesterdayRow2);
@@ -2033,6 +2041,7 @@ public final class MainActivity extends Activity {
     private EnergyPeriod energyForRange(LocalDate start, LocalDate end, String label) {
         EnergyPeriod p = new EnergyPeriod();
         p.label = label;
+        if (start != null && start.equals(end)) p.date = start;
 
         if (pv != null) {
             for (PvOutputClient.Day d : pv.recentDays) {
@@ -2086,6 +2095,45 @@ public final class MainActivity extends Activity {
             return java.time.OffsetDateTime.parse(value).atZoneSameInstant(BERLIN).toLocalDate();
         } catch (Exception ignored) {}
         return null;
+    }
+
+    private EnergyPeriod latestAvailableGridDay(LocalDate notAfter) {
+        if (octopus == null || notAfter == null) return null;
+
+        LocalDate latest = null;
+        for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+            try {
+                LocalDate date = LocalDate.parse(d.date);
+                if (date.isAfter(notAfter)) continue;
+                if (latest == null || date.isAfter(latest)) latest = date;
+            } catch (Exception ignored) {}
+        }
+
+        for (OctopusClient.Interval in : octopus.intervals) {
+            LocalDate date = octopusIntervalDate(in.readAt);
+            if (date == null || date.isAfter(notAfter)) continue;
+            if (latest == null || date.isAfter(latest)) latest = date;
+        }
+
+        if (latest == null) return null;
+        EnergyPeriod p = energyForRange(latest, latest, latest.toString());
+        p.date = latest;
+        return p.hasOctopus ? p : null;
+    }
+
+    private String gridDayDisplayDate(EnergyPeriod p) {
+        if (p == null || p.date == null) return "—";
+        LocalDate yesterday = LocalDate.now(BERLIN).minusDays(1);
+        if (p.date.equals(yesterday)) return "gestern";
+        return p.date.format(DateTimeFormatter.ofPattern("dd.MM."));
+    }
+
+    private String gridDayDetail(EnergyPeriod p, String kind) {
+        String day = gridDayDisplayDate(p);
+        if ("Nebenzeit".equals(kind)) {
+            return day + " · " + currentCheapStart() + "–" + currentCheapEnd();
+        }
+        return day + " · außerhalb " + currentCheapStart() + "–" + currentCheapEnd();
     }
 
     private LocalDate parsePvDate(String value) {
@@ -2358,6 +2406,7 @@ public final class MainActivity extends Activity {
 
     private static final class EnergyPeriod {
         String label = "";
+        LocalDate date;
         double pvKwh;
         double gridKwh;
         double cheapKwh;
