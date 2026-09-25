@@ -266,7 +266,10 @@ public final class MainActivity extends Activity {
                 yesterdayDate,
                 yesterdayDate,
                 "Gestern");
-        EnergyPeriod gridDay = yesterday.hasOctopus
+        // Octopus may already expose a placeholder/validation record for yesterday
+        // before real consumption has arrived. Do not let a zero-kWh placeholder
+        // hide the last day that actually contains consumption.
+        EnergyPeriod gridDay = hasUsableGridConsumption(yesterday)
                 ? yesterday
                 : latestAvailableGridDay(yesterdayDate);
         boolean gridIsYesterday = gridDay != null
@@ -2435,6 +2438,13 @@ public final class MainActivity extends Activity {
         return out;
     }
 
+    private boolean hasUsableGridConsumption(EnergyPeriod p) {
+        return p != null
+                && p.hasOctopus
+                && p.gridKwh > 0.000001
+                && (p.intervalCount > 0 || p.cheapKwh > 0.000001 || p.normalKwh > 0.000001);
+    }
+
     private EnergyPeriod latestAvailableGridDay(LocalDate notAfter) {
         if (octopus == null || notAfter == null) return null;
 
@@ -2467,10 +2477,15 @@ public final class MainActivity extends Activity {
             }
         }
 
-        if (latest == null) return null;
-        EnergyPeriod p = energyForRange(latest, latest, latest.toString());
-        p.date = latest;
-        return p.hasOctopus ? p : null;
+        // Walk backwards until we find a day with real consumption.
+        // A newer zero-value placeholder must not win over the last valid day.
+        LocalDate cursor = latest;
+        for (int i = 0; cursor != null && i < 14; i++, cursor = cursor.minusDays(1)) {
+            EnergyPeriod p = energyForRange(cursor, cursor, cursor.toString());
+            p.date = cursor;
+            if (hasUsableGridConsumption(p)) return p;
+        }
+        return null;
     }
 
     private String gridDayDisplayDate(EnergyPeriod p) {
@@ -2483,7 +2498,7 @@ public final class MainActivity extends Activity {
     private String gridDayDetail(EnergyPeriod p, String kind) {
         String day = gridDayDisplayDate(p);
         String count = p != null && p.intervalCount > 0
-                ? " · " + p.intervalCount + " h-Werte"
+                ? " · " + p.intervalCount + " Messwerte"
                 : "";
         if ("Nebenzeit".equals(kind)) {
             return day + count + " · " + currentCheapStart() + "–" + currentCheapEnd();
