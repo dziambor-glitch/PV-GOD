@@ -820,7 +820,7 @@ public final class MainActivity extends Activity {
             content.addView(UiKit.sectionTitle(this, "Smart-Meter"));
             boolean meterData = octopus.smartMeterDataAvailable;
             String recentDetail = octopus.recentIntervalCount > 0
-                    ? octopus.recentIntervalCount + " Messintervalle · " + octopus.measurementSource
+                    ? recentIntervalRangeText()
                     : (octopus.historyDayCount > 0
                             ? "aus Tageshistorie · " + octopus.historyDayCount + " Tage"
                             : "Octopus hat noch keine Messwerte geliefert");
@@ -846,6 +846,35 @@ public final class MainActivity extends Activity {
                     meterData ? "außerhalb des Fensters" : "noch nicht verfügbar",
                     UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
             content.addView(r2);
+
+            List<EnergyPeriod> recentDays = recentGridDayBreakdowns();
+            if (!recentDays.isEmpty()) {
+                LinearLayout daysCard = UiKit.card(this);
+                daysCard.addView(UiKit.overline(this, "TAGESAUFSCHLÜSSELUNG", UiKit.PURPLE));
+                TextView daysIntro = UiKit.caption(this,
+                        "Direkt aus den aktuell geladenen Octopus-Stundenintervallen:");
+                daysIntro.setPadding(0, dp(6), 0, dp(4));
+                daysCard.addView(daysIntro);
+
+                int shown = 0;
+                for (EnergyPeriod day : recentDays) {
+                    if (shown >= 4) break;
+                    String date = day.date == null ? "—"
+                            : day.date.format(DateTimeFormatter.ofPattern("dd.MM."));
+                    String completeness = day.intervalCount >= 24
+                            ? "vollständig"
+                            : day.intervalCount + "/24 h-Werte";
+                    TextView line = UiKit.text(this,
+                            String.format(Locale.GERMANY,
+                                    "%s  ·  %.2f kWh  ·  HZ %.2f / NZ %.2f  ·  %s",
+                                    date, day.gridKwh, day.normalKwh, day.cheapKwh, completeness),
+                            13, UiKit.INK);
+                    line.setPadding(0, dp(5), 0, dp(5));
+                    daysCard.addView(line);
+                    shown++;
+                }
+                content.addView(daysCard);
+            }
 
             LinearLayout diagnostic = UiKit.card(this);
             diagnostic.addView(UiKit.overline(this, "SMART-METER PRÜFUNG",
@@ -2066,6 +2095,7 @@ public final class MainActivity extends Activity {
                     if (in.cheap) p.cheapKwh += in.kwh;
                     else p.normalKwh += in.kwh;
                     p.hasOctopus = true;
+                    p.intervalCount++;
                     foundIntervals = true;
                 }
             }
@@ -2097,6 +2127,7 @@ public final class MainActivity extends Activity {
                         if (in.cheap) p.cheapKwh += in.kwh;
                         else p.normalKwh += in.kwh;
                         p.hasOctopus = true;
+                        p.intervalCount++;
                     }
                 }
             }
@@ -2117,22 +2148,90 @@ public final class MainActivity extends Activity {
         return null;
     }
 
+    private java.time.ZonedDateTime octopusIntervalDateTime(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return java.time.Instant.parse(value).atZone(BERLIN);
+        } catch (Exception ignored) {}
+        try {
+            return java.time.OffsetDateTime.parse(value).atZoneSameInstant(BERLIN);
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String recentIntervalRangeText() {
+        if (octopus == null || octopus.intervals.isEmpty()) return "keine aktuellen Intervalle";
+
+        java.time.ZonedDateTime min = null;
+        java.time.ZonedDateTime max = null;
+        for (OctopusClient.Interval in : octopus.intervals) {
+            java.time.ZonedDateTime z = octopusIntervalDateTime(in.readAt);
+            if (z == null) continue;
+            if (min == null || z.isBefore(min)) min = z;
+            if (max == null || z.isAfter(max)) max = z;
+        }
+
+        if (min == null || max == null) {
+            return octopus.recentIntervalCount + " Messintervalle · " + octopus.measurementSource;
+        }
+
+        DateTimeFormatter f = DateTimeFormatter.ofPattern("dd.MM. HH:mm");
+        return min.format(f) + "–" + max.format(f)
+                + " · " + octopus.recentIntervalCount + " Stundenwerte";
+    }
+
+    private List<EnergyPeriod> recentGridDayBreakdowns() {
+        List<EnergyPeriod> out = new ArrayList<>();
+        if (octopus == null || octopus.intervals.isEmpty()) return out;
+
+        List<LocalDate> dates = new ArrayList<>();
+        for (OctopusClient.Interval in : octopus.intervals) {
+            LocalDate date = octopusIntervalDate(in.readAt);
+            if (date != null && !dates.contains(date)) dates.add(date);
+        }
+        dates.sort(Collections.reverseOrder());
+
+        for (LocalDate date : dates) {
+            EnergyPeriod p = new EnergyPeriod();
+            p.date = date;
+            p.label = date.toString();
+
+            for (OctopusClient.Interval in : octopus.intervals) {
+                LocalDate intervalDate = octopusIntervalDate(in.readAt);
+                if (intervalDate == null || !intervalDate.equals(date)) continue;
+                p.gridKwh += in.kwh;
+                if (in.cheap) p.cheapKwh += in.kwh;
+                else p.normalKwh += in.kwh;
+                p.intervalCount++;
+                p.hasOctopus = true;
+            }
+            p.costEuro = historyCost(p.cheapKwh, p.normalKwh);
+            out.add(p);
+        }
+        return out;
+    }
+
     private EnergyPeriod latestAvailableGridDay(LocalDate notAfter) {
         if (octopus == null || notAfter == null) return null;
 
         LocalDate latest = null;
-        for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
-            try {
-                LocalDate date = LocalDate.parse(d.date);
-                if (date.isAfter(notAfter)) continue;
-                if (latest == null || date.isAfter(latest)) latest = date;
-            } catch (Exception ignored) {}
-        }
 
+        // Prefer the latest date backed by actual hourly intervals.
         for (OctopusClient.Interval in : octopus.intervals) {
             LocalDate date = octopusIntervalDate(in.readAt);
             if (date == null || date.isAfter(notAfter)) continue;
             if (latest == null || date.isAfter(latest)) latest = date;
+        }
+
+        // Only fall back to the cached daily history when no recent interval exists.
+        if (latest == null) {
+            for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+                try {
+                    LocalDate date = LocalDate.parse(d.date);
+                    if (date.isAfter(notAfter)) continue;
+                    if (latest == null || date.isAfter(latest)) latest = date;
+                } catch (Exception ignored) {}
+            }
         }
 
         if (latest == null) return null;
@@ -2150,10 +2249,13 @@ public final class MainActivity extends Activity {
 
     private String gridDayDetail(EnergyPeriod p, String kind) {
         String day = gridDayDisplayDate(p);
+        String count = p != null && p.intervalCount > 0
+                ? " · " + p.intervalCount + " h-Werte"
+                : "";
         if ("Nebenzeit".equals(kind)) {
-            return day + " · " + currentCheapStart() + "–" + currentCheapEnd();
+            return day + count + " · " + currentCheapStart() + "–" + currentCheapEnd();
         }
-        return day + " · außerhalb " + currentCheapStart() + "–" + currentCheapEnd();
+        return day + count + " · außerhalb " + currentCheapStart() + "–" + currentCheapEnd();
     }
 
     private LocalDate parsePvDate(String value) {
@@ -2432,6 +2534,7 @@ public final class MainActivity extends Activity {
         double cheapKwh;
         double normalKwh;
         double costEuro;
+        int intervalCount;
         boolean hasPv;
         boolean hasOctopus;
     }
