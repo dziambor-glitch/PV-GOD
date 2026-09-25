@@ -6,6 +6,7 @@ on:
     branches:
       - pvcompact-clean-v1
       - main
+      - octopus-day-breakdown-v175
       - fix-daily-octopus-v174
       - home-last-grid-day-v173
       - smartmeter-validity-v172
@@ -70,6 +71,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-v1.7.4
+          name: PVCompact-v1.7.5
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
