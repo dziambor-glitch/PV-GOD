@@ -2053,31 +2053,51 @@ public final class MainActivity extends Activity {
         }
 
         if (octopus != null) {
-            boolean foundDaily = false;
-            for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
-                LocalDate date;
-                try {
-                    date = LocalDate.parse(d.date);
-                } catch (Exception ignored) {
-                    continue;
-                }
-                if (date.isBefore(start) || date.isAfter(end)) continue;
+            boolean singleDay = start != null && start.equals(end);
+            boolean foundIntervals = false;
 
-                p.gridKwh += d.totalKwh;
-                p.cheapKwh += d.cheapKwh;
-                p.normalKwh += d.normalKwh;
-                p.hasOctopus = true;
-                foundDaily = true;
-            }
-
-            if (!foundDaily) {
+            // For a single day, prefer the actual recent hourly intervals.
+            // They are fresher and must win over potentially stale/zero cached daily sums.
+            if (singleDay) {
                 for (OctopusClient.Interval in : octopus.intervals) {
                     LocalDate date = octopusIntervalDate(in.readAt);
-                    if (date == null || date.isBefore(start) || date.isAfter(end)) continue;
+                    if (date == null || !date.equals(start)) continue;
                     p.gridKwh += in.kwh;
                     if (in.cheap) p.cheapKwh += in.kwh;
                     else p.normalKwh += in.kwh;
                     p.hasOctopus = true;
+                    foundIntervals = true;
+                }
+            }
+
+            if (!foundIntervals) {
+                boolean foundDaily = false;
+                for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+                    LocalDate date;
+                    try {
+                        date = LocalDate.parse(d.date);
+                    } catch (Exception ignored) {
+                        continue;
+                    }
+                    if (date.isBefore(start) || date.isAfter(end)) continue;
+
+                    p.gridKwh += d.totalKwh;
+                    p.cheapKwh += d.cheapKwh;
+                    p.normalKwh += d.normalKwh;
+                    p.hasOctopus = true;
+                    foundDaily = true;
+                }
+
+                // If no daily aggregate exists, use recent hourly intervals as fallback.
+                if (!foundDaily) {
+                    for (OctopusClient.Interval in : octopus.intervals) {
+                        LocalDate date = octopusIntervalDate(in.readAt);
+                        if (date == null || date.isBefore(start) || date.isAfter(end)) continue;
+                        p.gridKwh += in.kwh;
+                        if (in.cheap) p.cheapKwh += in.kwh;
+                        else p.normalKwh += in.kwh;
+                        p.hasOctopus = true;
+                    }
                 }
             }
         }
