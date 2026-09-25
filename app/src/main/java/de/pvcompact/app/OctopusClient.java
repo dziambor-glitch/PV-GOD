@@ -27,6 +27,32 @@ public final class OctopusClient {
         public String readAt = "";
         public double kwh;
         public boolean cheap;
+        public String source = "";
+        public String readingDirection = "";
+        public String readingQuality = "";
+        public String registerId = "";
+        public String deviceId = "";
+        public String frequency = "";
+    }
+
+    public static final class DayValidation {
+        public String date = "";
+        public double hourKwh;
+        public int hourCount;
+        public double rawKwh;
+        public int rawCount;
+        public double dayKwh;
+        public int dayCount;
+        public double preferredKwh;
+        public double preferredCheapKwh;
+        public double preferredNormalKwh;
+        public int preferredCount;
+        public String preferredSource = "";
+        public boolean consistent;
+        public String source = "";
+        public String quality = "";
+        public String direction = "";
+        public String note = "";
     }
 
     public static final class DailyUsage {
@@ -60,6 +86,7 @@ public final class OctopusClient {
         public int historyDayCount;
         public String latestReadingAt = "";
         public String measurementSource = "";
+        public DayValidation dayValidation;
         public final List<Interval> intervals = new ArrayList<>();
         public final List<DailyUsage> dailyHistory = new ArrayList<>();
     }
@@ -154,6 +181,13 @@ public final class OctopusClient {
         } catch (Exception recentError) {
             appendNote(s, "Jüngste Smart-Meter-Werte konnten nicht geladen werden: "
                     + cut(recentError.getMessage()));
+        }
+
+        try {
+            validateLatestDay(context, auth.token, s);
+        } catch (Exception validationError) {
+            appendNote(s, "Tagesprüfung konnte nicht abgeschlossen werden: "
+                    + cut(validationError.getMessage()));
         }
 
         try {
@@ -511,6 +545,105 @@ public final class OctopusClient {
         }
     }
 
+    private void validateLatestDay(AccountContext context, String token, Summary s)
+            throws Exception {
+        LocalDate latest = null;
+        for (Interval in : s.intervals) {
+            ZonedDateTime zdt = parseDateTime(in.readAt);
+            if (zdt == null) continue;
+            LocalDate date = zdt.toLocalDate();
+            if (latest == null || date.isAfter(latest)) latest = date;
+        }
+        if (latest == null) return;
+
+        ZonedDateTime start = latest.atStartOfDay(BERLIN);
+        ZonedDateTime end = latest.plusDays(1).atStartOfDay(BERLIN);
+
+        List<Interval> raw = fetchIntervals(
+                context, token, start, end, "RAW_INTERVAL", 100, 3, s);
+        List<Interval> day = fetchIntervals(
+                context, token, start, end, "DAY_INTERVAL", 20, 2, s);
+
+        DayValidation v = new DayValidation();
+        v.date = latest.toString();
+
+        for (Interval in : s.intervals) {
+            ZonedDateTime zdt = parseDateTime(in.readAt);
+            if (zdt == null || !zdt.toLocalDate().equals(latest)) continue;
+            v.hourKwh += in.kwh;
+            v.hourCount++;
+            collectValidationMeta(v, in);
+        }
+
+        double rawCheap = 0.0;
+        double rawNormal = 0.0;
+        for (Interval in : raw) {
+            v.rawKwh += in.kwh;
+            v.rawCount++;
+            if (in.cheap) rawCheap += in.kwh;
+            else rawNormal += in.kwh;
+            collectValidationMeta(v, in);
+        }
+
+        for (Interval in : day) {
+            v.dayKwh += in.kwh;
+            v.dayCount++;
+            collectValidationMeta(v, in);
+        }
+
+        int expectedHours = (int)((end.toEpochSecond() - start.toEpochSecond()) / 3600L);
+        int expectedRaw = expectedHours * 4;
+
+        if (v.rawCount >= expectedRaw) {
+            v.preferredKwh = v.rawKwh;
+            v.preferredCheapKwh = rawCheap;
+            v.preferredNormalKwh = rawNormal;
+            v.preferredCount = v.rawCount;
+            v.preferredSource = "RAW_INTERVAL";
+        } else if (v.hourCount >= expectedHours) {
+            v.preferredKwh = v.hourKwh;
+            v.preferredCount = v.hourCount;
+            v.preferredSource = "HOUR_INTERVAL";
+            for (Interval in : s.intervals) {
+                ZonedDateTime zdt = parseDateTime(in.readAt);
+                if (zdt == null || !zdt.toLocalDate().equals(latest)) continue;
+                if (in.cheap) v.preferredCheapKwh += in.kwh;
+                else v.preferredNormalKwh += in.kwh;
+            }
+        } else if (v.dayCount > 0) {
+            v.preferredKwh = v.dayKwh;
+            v.preferredCount = v.dayCount;
+            v.preferredSource = "DAY_INTERVAL";
+        }
+
+        boolean hourRaw = v.hourCount == 0 || v.rawCount == 0
+                || nearlyEqual(v.hourKwh, v.rawKwh);
+        boolean hourDay = v.hourCount == 0 || v.dayCount == 0
+                || nearlyEqual(v.hourKwh, v.dayKwh);
+        boolean rawDay = v.rawCount == 0 || v.dayCount == 0
+                || nearlyEqual(v.rawKwh, v.dayKwh);
+        v.consistent = hourRaw && hourDay && rawDay;
+
+        if (v.consistent) {
+            v.note = "Auflösungen stimmen überein";
+        } else {
+            v.note = "Abweichung zwischen Stunden-, 15-Minuten- und Tageswert";
+        }
+        s.dayValidation = v;
+    }
+
+    private void collectValidationMeta(DayValidation v, Interval in) {
+        if (v == null || in == null) return;
+        if (v.source.isEmpty() && in.source != null) v.source = in.source;
+        if (v.quality.isEmpty() && in.readingQuality != null) v.quality = in.readingQuality;
+        if (v.direction.isEmpty() && in.readingDirection != null) v.direction = in.readingDirection;
+    }
+
+    private boolean nearlyEqual(double a, double b) {
+        double tolerance = Math.max(0.02, Math.max(Math.abs(a), Math.abs(b)) * 0.01);
+        return Math.abs(a - b) <= tolerance;
+    }
+
     private void loadYearHistory(AccountContext context, String token, Summary s)
             throws Exception {
         LocalDate today = LocalDate.now(BERLIN);
@@ -644,6 +777,12 @@ public final class OctopusClient {
               + "   edges { node {"
               + "    __typename source value unit"
               + "    ... on IntervalMeasurementType { startAt endAt durationInSeconds }"
+              + "    metaData { utilityFilters {"
+              + "     __typename"
+              + "     ... on ElectricityFiltersOutput {"
+              + "      marketSupplyPointId deviceId registerId readingDirection readingFrequencyType readingQuality"
+              + "     }"
+              + "    } }"
               + "   } }"
               + "  }"
               + " }"
@@ -710,6 +849,17 @@ public final class OctopusClient {
                     in.readAt = readAt;
                     in.kwh = kwh;
                     in.cheap = isCheap(zdt.toLocalTime(), s);
+                    in.source = node.optString("source", "");
+
+                    JSONObject meta = node.optJSONObject("metaData");
+                    JSONObject utility = meta == null ? null : meta.optJSONObject("utilityFilters");
+                    if (utility != null) {
+                        in.readingDirection = utility.optString("readingDirection", "");
+                        in.readingQuality = utility.optString("readingQuality", "");
+                        in.registerId = utility.optString("registerId", "");
+                        in.deviceId = utility.optString("deviceId", "");
+                        in.frequency = utility.optString("readingFrequencyType", "");
+                    }
                     out.add(in);
                 }
             }
