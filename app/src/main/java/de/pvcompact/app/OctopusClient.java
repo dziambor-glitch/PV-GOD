@@ -241,16 +241,31 @@ public final class OctopusClient {
     }
 
     private Auth authenticate() throws Exception {
-        JSONObject input = new JSONObject();
-        if (!refreshToken.isEmpty()) {
-            input.put("refreshToken", refreshToken);
-        } else if (!apiKey.isEmpty()) {
-            input.put("APIKey", apiKey);
-        } else {
-            input.put("email", email);
-            input.put("password", password);
+        // An explicitly entered login is a repair/bootstrap action and must beat
+        // stale credentials that may still be stored on the device.
+        if (!email.isEmpty() && !password.isEmpty()) {
+            JSONObject input = new JSONObject()
+                    .put("email", email)
+                    .put("password", password);
+            return authenticateWithInput(input, "E-Mail/Passwort");
         }
 
+        // For unattended operation prefer the long-lived account API key.
+        if (!apiKey.isEmpty()) {
+            JSONObject input = new JSONObject().put("APIKey", apiKey);
+            return authenticateWithInput(input, "API-Key");
+        }
+
+        if (!refreshToken.isEmpty()) {
+            JSONObject input = new JSONObject().put("refreshToken", refreshToken);
+            return authenticateWithInput(input, "Refresh Token");
+        }
+
+        throw new IllegalStateException(
+                "Octopus Zugang fehlt: API-Key, Refresh Token oder einmaliger Login erforderlich");
+    }
+
+    private Auth authenticateWithInput(JSONObject input, String method) throws Exception {
         String query =
                 "mutation ObtainKrakenToken($input: ObtainJSONWebTokenInput!) {"
               + " obtainKrakenToken(input: $input) { token refreshToken refreshExpiresIn }"
@@ -258,13 +273,16 @@ public final class OctopusClient {
 
         JSONObject root = post(query, new JSONObject().put("input", input), null);
         String err = firstError(root);
-        if (err != null) throw new IllegalStateException("Octopus Login: " + err);
+        if (err != null) {
+            throw new IllegalStateException("Octopus Login (" + method + "): " + err);
+        }
 
         JSONObject data = root.optJSONObject("data");
         JSONObject obj = data == null ? null : data.optJSONObject("obtainKrakenToken");
         String token = obj == null ? "" : obj.optString("token", "");
         if (token.isEmpty()) {
-            throw new IllegalStateException("Octopus hat keinen Token geliefert");
+            throw new IllegalStateException(
+                    "Octopus Login (" + method + "): kein Token geliefert");
         }
 
         Auth a = new Auth();
