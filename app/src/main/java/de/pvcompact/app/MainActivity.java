@@ -979,7 +979,7 @@ public final class MainActivity extends Activity {
         content.addView(docs, buttonLp());
 
         TextView apiNote = UiKit.caption(this,
-                "E-Mail + Passwort werden nur für die erstmalige Anmeldung verwendet und nicht gespeichert. Der danach von Octopus gelieferte Refresh Token wird verschlüsselt im Android Keystore gespeichert. Smart-Meter-Werte können bei Octopus zeitverzögert eintreffen.");
+                "Empfohlen ist ein Kraken API-Key. Refresh Tokens können ungültig werden; PV Compact entfernt einen erkennbar abgelaufenen Token automatisch. E-Mail + Passwort dienen nur noch als einmaliger Reparatur-/Übergangslogin und werden nicht gespeichert. Smart-Meter-Werte können bei Octopus zeitverzögert eintreffen.");
         apiNote.setPadding(dp(4), dp(4), dp(4), dp(10));
         content.addView(apiNote);
     }
@@ -1663,7 +1663,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout octCard = settingsCard("Octopus Energy", "Konto verbinden und Go-Tarif einstellen");
         TextView octNote = UiKit.caption(this,
-                "Du kannst Octopus direkt mit E-Mail + Passwort verbinden. Das Passwort wird nicht gespeichert; nach erfolgreicher Anmeldung bleibt nur der Refresh Token verschlüsselt im Android Keystore.");
+                "Empfohlen: Kraken API-Key. Ein gespeicherter Refresh Token wird weiterhin unterstützt, kann aber ablaufen. E-Mail + Passwort werden nur noch als einmaliger Reparatur-/Übergangslogin verwendet und nicht gespeichert.");
         octNote.setPadding(0, 0, 0, dp(9));
         octCard.addView(octNote);
 
@@ -1906,9 +1906,9 @@ public final class MainActivity extends Activity {
 
         TextView intro = UiKit.caption(this,
                 "Konto " + accountNumber
-                        + "\n\nAm einfachsten: einmal mit deiner Octopus-E-Mail-Adresse und deinem Passwort anmelden. "
-                        + "Das Passwort wird nur für diesen Verbindungstest verwendet und nicht gespeichert. "
-                        + "Nach erfolgreicher Anmeldung speichert PV Compact ausschließlich den Refresh Token verschlüsselt.");
+                        + "\n\nEmpfohlen ist ein Kraken API-Key. Alternativ kannst du einen vorhandenen Refresh Token verwenden. "
+                        + "E-Mail + Passwort sind nur noch als Reparatur-/Übergangslogin vorgesehen; "
+                        + "sie werden nicht gespeichert und überschreiben bei diesem Test bewusst einen alten Refresh Token.");
         intro.setPadding(0, 0, 0, dp(12));
         box.addView(intro);
 
@@ -1923,7 +1923,7 @@ public final class MainActivity extends Activity {
         box.addView(password, pp);
 
         TextView advanced = UiKit.caption(this,
-                "Alternativ, falls vorhanden: API-Key oder bereits vorhandenen Refresh Token verwenden.");
+                "Dauerhafter Zugang: API-Key bevorzugt. Ein alter Refresh Token kann nach einer Octopus-Änderung ungültig werden.");
         advanced.setPadding(0, 0, 0, dp(8));
         box.addView(advanced);
 
@@ -1941,40 +1941,59 @@ public final class MainActivity extends Activity {
                 .setTitle("Octopus verbinden")
                 .setView(box)
                 .setNegativeButton("Abbrechen", null)
+                .setNeutralButton("Zugang zurücksetzen", null)
                 .setPositiveButton("Verbinden & testen", null)
                 .create();
 
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
-                    String emailValue = email.getText().toString().trim();
-                    String passwordValue = password.getText().toString();
-                    String keyValue = apiKey.getText().toString().trim();
-                    String refreshValue = refresh.getText().toString().trim();
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                prefs.putSecret("oct_api_key", "");
+                prefs.putSecret("oct_refresh", "");
+                octopus = null;
+                octopusError = "";
+                dialog.dismiss();
+                Toast.makeText(this,
+                        "Gespeicherter Octopus-Zugang wurde zurückgesetzt.",
+                        Toast.LENGTH_LONG).show();
+                if ("Einstellungen".equals(currentTab) || "Octopus".equals(currentTab)) {
+                    showTab(currentTab);
+                }
+            });
 
-                    boolean loginProvided = !emailValue.isEmpty() && !passwordValue.isEmpty();
-                    boolean tokenProvided = !keyValue.isEmpty() || !refreshValue.isEmpty();
-                    if (!loginProvided && !tokenProvided) {
-                        Toast.makeText(this,
-                                "Bitte E-Mail + Passwort oder API-Key/Refresh Token eingeben.",
-                                Toast.LENGTH_LONG).show();
-                        return;
-                    }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String emailValue = email.getText().toString().trim();
+                String passwordValue = password.getText().toString();
+                String keyValue = apiKey.getText().toString().trim();
+                String refreshValue = refresh.getText().toString().trim();
 
-                    prefs.put("oct_account", accountNumber);
+                boolean loginProvided = !emailValue.isEmpty() && !passwordValue.isEmpty();
+                boolean tokenProvided = !keyValue.isEmpty() || !refreshValue.isEmpty();
+                if (!loginProvided && !tokenProvided) {
+                    Toast.makeText(this,
+                            "Bitte API-Key/Refresh Token oder E-Mail + Passwort eingeben.",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+
+                prefs.put("oct_account", accountNumber);
+                octopus = null;
+                octopusError = "";
+                dialog.dismiss();
+                Toast.makeText(this, "Octopus wird verbunden …", Toast.LENGTH_SHORT).show();
+
+                if (loginProvided) {
+                    // Explicit repair login: never let a prefilled stale token win.
+                    prefs.putSecret("oct_api_key", "");
+                    prefs.putSecret("oct_refresh", "");
+                    refreshOctopus(emailValue, passwordValue);
+                } else {
                     prefs.putSecret("oct_api_key", keyValue);
                     prefs.putSecret("oct_refresh", refreshValue);
-                    octopus = null;
-                    octopusError = "";
-                    dialog.dismiss();
-                    Toast.makeText(this, "Octopus wird verbunden …", Toast.LENGTH_SHORT).show();
-
-                    if (loginProvided && !tokenProvided) {
-                        refreshOctopus(emailValue, passwordValue);
-                    } else {
-                        refreshOctopus();
-                    }
-                    if ("Einstellungen".equals(currentTab)) showTab("Einstellungen");
-                }));
+                    refreshOctopus();
+                }
+                if ("Einstellungen".equals(currentTab)) showTab("Einstellungen");
+            });
+        });
         dialog.show();
     }
 
@@ -2139,8 +2158,16 @@ public final class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 String err = cleanError(e);
+
+                // A dead refresh token must not trap the app in an endless retry loop.
+                if (err.contains("Octopus Login (Refresh Token):")) {
+                    prefs.putSecret("oct_refresh", "");
+                    err += " Der gespeicherte Refresh Token wurde entfernt. Bitte Octopus neu verbinden; bevorzugt mit API-Key.";
+                }
+
+                String finalErr = err;
                 runOnUiThread(() -> {
-                    octopusError = err;
+                    octopusError = finalErr;
                     if ("Octopus".equals(currentTab) || "Statistik".equals(currentTab) || "Home".equals(currentTab) || "Einstellungen".equals(currentTab)) showTab(currentTab);
                 });
             }
