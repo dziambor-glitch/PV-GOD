@@ -25,6 +25,7 @@ public final class WattMeterHistoryStore extends SQLiteOpenHelper {
     }
 
     private long lastWriteMs = 0;
+    private long lastRegisterWriteMs = 0;
     private long writes = 0;
 
     public WattMeterHistoryStore(Context context) {
@@ -33,6 +34,7 @@ public final class WattMeterHistoryStore extends SQLiteOpenHelper {
 
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS samples (time_ms INTEGER PRIMARY KEY, power_w REAL NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS registers (time_ms INTEGER PRIMARY KEY, import_kwh REAL NOT NULL, export_kwh REAL NOT NULL)");
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
@@ -51,6 +53,54 @@ public final class WattMeterHistoryStore extends SQLiteOpenHelper {
         // Keep the database bounded without running a delete for each message.
         if (++writes % 100 == 0) db.delete("samples", "time_ms < ?",
                 new String[]{Long.toString(timeMs - 14L * 86400000L)});
+    }
+
+    public static final class RegisterDelta {
+        public final long startMs, endMs;
+        public final double importKwh, exportKwh;
+        RegisterDelta(long startMs, long endMs, double importKwh, double exportKwh) {
+            this.startMs = startMs;
+            this.endMs = endMs;
+            this.importKwh = importKwh;
+            this.exportKwh = exportKwh;
+        }
+    }
+
+    public synchronized void addRegisters(long timeMs, double importKwh, double exportKwh) {
+        if (timeMs <= 0 || !Double.isFinite(importKwh) || !Double.isFinite(exportKwh)
+                || importKwh < 0 || exportKwh < 0) return;
+        if (lastRegisterWriteMs > 0 && timeMs - lastRegisterWriteMs < 60000L) return;
+        lastRegisterWriteMs = timeMs;
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put("time_ms", timeMs);
+        values.put("import_kwh", importKwh);
+        values.put("export_kwh", exportKwh);
+        SQLiteDatabase db = getWritableDatabase();
+        db.insertWithOnConflict("registers", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        db.delete("registers", "time_ms < ?",
+                new String[]{Long.toString(timeMs - 30L * 86400000L)});
+    }
+
+    public synchronized RegisterDelta dayDelta(long startMs, long endMs) {
+        double firstImp = Double.NaN, firstExp = Double.NaN, lastImp = Double.NaN, lastExp = Double.NaN;
+        long firstMs = 0, lastMs = 0;
+        try (Cursor c = getReadableDatabase().rawQuery(
+                "SELECT time_ms,import_kwh,export_kwh FROM registers WHERE time_ms>=? AND time_ms<=? ORDER BY time_ms",
+                new String[]{Long.toString(startMs), Long.toString(endMs)})) {
+            while (c.moveToNext()) {
+                if (firstMs == 0) {
+                    firstMs = c.getLong(0);
+                    firstImp = c.getDouble(1);
+                    firstExp = c.getDouble(2);
+                }
+                lastMs = c.getLong(0);
+                lastImp = c.getDouble(1);
+                lastExp = c.getDouble(2);
+            }
+        }
+        if (firstMs == 0 || lastMs <= firstMs || lastImp < firstImp || lastExp < firstExp)
+            return null;
+        return new RegisterDelta(firstMs, lastMs, lastImp - firstImp, lastExp - firstExp);
     }
 
     public synchronized List<Point> load(long sinceMs, long untilMs) {
