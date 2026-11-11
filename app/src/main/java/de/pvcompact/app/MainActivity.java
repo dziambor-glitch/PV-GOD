@@ -58,6 +58,8 @@ public final class MainActivity extends Activity {
     private String wattError = "";
     private long lastWattUiAt = 0L;
     private TextView wattPowerText, wattRegistersText, wattStateText;
+    private GridPowerChartView wattHourChart, wattDayChart;
+    private long lastWattChartAt = 0L;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -1647,6 +1649,18 @@ public final class MainActivity extends Activity {
         if (wattPowerText != null) wattPowerText.setText(wattPowerLabel());
         if (wattRegistersText != null) wattRegistersText.setText(wattRegisterLabel());
         if (wattStateText != null) wattStateText.setText(wattStateLabel());
+        long now = System.currentTimeMillis();
+        if (!"Netz".equals(currentTab) || now - lastWattChartAt < 5000L) return;
+        lastWattChartAt = now;
+        try {
+            if (wattHourChart != null)
+                wattHourChart.setData(wattHistory.load(now - 3600000L, now),
+                        now - 3600000L, now, false);
+            if (wattDayChart != null) {
+                long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+                wattDayChart.setData(wattHistory.load(start, now), start, now, true);
+            }
+        } catch (Exception ignored) {}
     }
 
     private void showWattMeterCard() {
@@ -1702,9 +1716,9 @@ public final class MainActivity extends Activity {
         }
         content.addView(today);
         content.addView(UiKit.sectionTitle(this, "Netzleistung · letzte 60 Minuten"));
-        addWattGraph(currentMs - 3600000L, currentMs, false);
+        wattHourChart = addWattGraph(currentMs - 3600000L, currentMs, false);
         content.addView(UiKit.sectionTitle(this, "Netzleistung · heute"));
-        addWattGraph(startOfDayMs, currentMs, true);
+        wattDayChart = addWattGraph(startOfDayMs, currentMs, true);
         TextView note = UiKit.caption(this,
                 "Blau: Netzbezug. Orange: kurzzeitige Einspeisung. Die Kurve wird nur bei geöffnetem bzw. laufendem PV Compact per MQTT mitgeschrieben. Zeiträume ohne Messwerte bleiben bewusst leer. Eine spätere lokale Synchronisierung der WattWächter-Historie kann diese Lücken schließen.");
         note.setPadding(dp(5), dp(8), dp(5), dp(13));
@@ -1715,7 +1729,7 @@ public final class MainActivity extends Activity {
         showOctopusHourlyTariffChart();
     }
 
-    private void addWattGraph(long fromMs, long toMs, boolean day) {
+    private GridPowerChartView addWattGraph(long fromMs, long toMs, boolean day) {
         LinearLayout card = UiKit.card(this);
         GridPowerChartView chart = new GridPowerChartView(this);
         List<WattMeterHistoryStore.Point> points = Collections.emptyList();
@@ -1723,8 +1737,9 @@ public final class MainActivity extends Activity {
         chart.setData(points, fromMs, toMs, day);
         card.addView(chart, new LinearLayout.LayoutParams(-1, dp(240)));
         card.addView(UiKit.caption(this,
-                points.size() + " tatsächlich gespeicherte Messpunkte · keine Hochrechnung"));
+                points.size() + " tatsächlich gespeicherte Messpunkte beim Öffnen · keine Hochrechnung"));
         content.addView(card);
+        return chart;
     }
 
     private void showOctopusDailyTariffChart() {
