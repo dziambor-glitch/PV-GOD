@@ -29,15 +29,20 @@ public final class WattMeterMqttClient {
         public final Double exportKwh;
         public final long powerReceivedAtMillis;
         public final long livePowerReceivedAtMillis;
+        public final long freshImportReceivedAtMillis;
+        public final long freshExportReceivedAtMillis;
 
         private Snapshot(String state, Double powerW, Double importKwh, Double exportKwh,
-                         long powerReceivedAtMillis, long livePowerReceivedAtMillis) {
+                         long powerReceivedAtMillis, long livePowerReceivedAtMillis,
+                         long freshImportReceivedAtMillis, long freshExportReceivedAtMillis) {
             this.state = state;
             this.powerW = powerW;
             this.importKwh = importKwh;
             this.exportKwh = exportKwh;
             this.powerReceivedAtMillis = powerReceivedAtMillis;
             this.livePowerReceivedAtMillis = livePowerReceivedAtMillis;
+            this.freshImportReceivedAtMillis = freshImportReceivedAtMillis;
+            this.freshExportReceivedAtMillis = freshExportReceivedAtMillis;
         }
     }
 
@@ -47,6 +52,7 @@ public final class WattMeterMqttClient {
     private String state = "Verbindung wird aufgebaut";
     private Double powerW, importKwh, exportKwh;
     private long powerReceivedAtMillis, livePowerReceivedAtMillis;
+    private long freshImportReceivedAtMillis, freshExportReceivedAtMillis;
     private volatile boolean closed;
 
     public WattMeterMqttClient(String host, int port, String username,
@@ -114,8 +120,10 @@ public final class WattMeterMqttClient {
                             if (!message.isRetained()) livePowerReceivedAtMillis = powerReceivedAtMillis;
                         } else if (code.equals("1.8.0") && value >= 0) {
                             importKwh = value;
+                            if (!message.isRetained()) freshImportReceivedAtMillis = System.currentTimeMillis();
                         } else if (code.equals("2.8.0") && value >= 0) {
                             exportKwh = value;
+                            if (!message.isRetained()) freshExportReceivedAtMillis = System.currentTimeMillis();
                         }
                     }
                     report();
@@ -161,7 +169,8 @@ public final class WattMeterMqttClient {
 
     public synchronized Snapshot snapshot() {
         return new Snapshot(state, powerW, importKwh, exportKwh,
-                powerReceivedAtMillis, livePowerReceivedAtMillis);
+                powerReceivedAtMillis, livePowerReceivedAtMillis,
+                freshImportReceivedAtMillis, freshExportReceivedAtMillis);
     }
 
     private void report() {
