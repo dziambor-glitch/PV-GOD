@@ -7,6 +7,8 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -38,7 +40,19 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final ZoneId BERLIN = ZoneId.of("Europe/Berlin");
 
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService io = Executors.newFixedThreadPool(3);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private long lastPvRefreshRequestMs, lastOctopusRefreshRequestMs, lastWattAttemptMs;
+    private boolean inForeground;
+    private final Runnable foregroundUpdates = new Runnable() {
+        @Override public void run() {
+            if (!inForeground || isFinishing()) return;
+            maybeRefreshSources();
+            ensureWattMeter();
+            updateWattMeterTexts();
+            mainHandler.postDelayed(this, 15000L);
+        }
+    };
     private final List<NavItem> navItems = new ArrayList<>();
 
     private Prefs prefs;
@@ -57,8 +71,9 @@ public final class MainActivity extends Activity {
     private volatile WattMeterMqttClient.Snapshot wattSnapshot;
     private String wattError = "";
     private long lastWattUiAt = 0L;
-    private TextView wattPowerText, wattRegistersText, wattStateText;
-    private GridPowerChartView wattHourChart, wattDayChart;
+    private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
+    private TextView wattYearText, wattTodayText;
+    private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
     @Override
@@ -74,17 +89,51 @@ public final class MainActivity extends Activity {
 
         buildShell();
         showTab("Home");
-        refreshPvForecast(false);
-
-        if (!prefs.get("oct_account", "").isEmpty()
-                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
-            refreshOctopus();
-        }
         startWattMeter();
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        inForeground = true;
+        mainHandler.removeCallbacks(foregroundUpdates);
+        mainHandler.post(foregroundUpdates);
+    }
+
+    @Override
+    protected void onPause() {
+        inForeground = false;
+        mainHandler.removeCallbacks(foregroundUpdates);
+        super.onPause();
+    }
+
+    private void maybeRefreshSources() {
+        long now = System.currentTimeMillis();
+        if (now - lastPvRefreshRequestMs > 2 * 60_000L) refreshPvForecast(false);
+        if (!prefs.get("oct_account", "").isEmpty()
+                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())
+                && now - lastOctopusRefreshRequestMs > 45 * 60_000L) refreshOctopus();
+    }
+
+    private void ensureWattMeter() {
+        if (!prefs.getBool("watt_mqtt_enabled", false)
+                || prefs.get("watt_mqtt_host", "").trim().isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (now - lastWattAttemptMs < 45000L) return;
+        WattMeterMqttClient.Snapshot s = wattSnapshot;
+        if (wattMeter == null || s == null
+                || s.state.startsWith("Verbindung fehlgeschlagen")
+                || s.state.startsWith("Abo fehlgeschlagen")
+                || (s.livePowerReceivedAtMillis > 0
+                    && now - s.livePowerReceivedAtMillis > 100000L)
+                || (s.livePowerReceivedAtMillis == 0 && now - lastWattAttemptMs > 90000L)) {
+            startWattMeter();
+        }
+    }
+
+    @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(foregroundUpdates);
         if (wattMeter != null) wattMeter.close();
         if (wattHistory != null) wattHistory.close();
         io.shutdownNow();
@@ -219,6 +268,7 @@ public final class MainActivity extends Activity {
 
     private void showHome() {
         pageHeader(greeting(), "Dein Energie-Dashboard für heute");
+        showWattMeterCard();
 
         if (pv == null) {
             LinearLayout empty = UiKit.card(this);
@@ -241,7 +291,6 @@ public final class MainActivity extends Activity {
             heroToday();
         }
 
-        showWattMeterCard();
         content.addView(UiKit.sectionTitle(this, "Auf einen Blick"));
         LinearLayout row1 = UiKit.row(this);
         row1.setBaselineAligned(false);
@@ -1580,6 +1629,7 @@ public final class MainActivity extends Activity {
         }
         wattSnapshot = null;
         wattError = "";
+        lastWattAttemptMs = System.currentTimeMillis();
         if (!prefs.getBool("watt_mqtt_enabled", false)) return;
         String host = prefs.get("watt_mqtt_host", "").trim();
         if (host.isEmpty()) return;
@@ -2356,6 +2406,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshPvForecast(boolean forceLive) {
+        lastPvRefreshRequestMs = System.currentTimeMillis();
         io.execute(() -> {
             PvOutputClient.Dashboard newPv = pv;
             List<ForecastClient.Day> newForecast = forecast;
@@ -2417,6 +2468,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshOctopus(String email, String password) {
+        lastOctopusRefreshRequestMs = System.currentTimeMillis();
         io.execute(() -> {
             try {
                 OctopusClient client = new OctopusClient(
