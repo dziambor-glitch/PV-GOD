@@ -14,6 +14,10 @@ android {
         versionName = "1.7.9"
     }
 
+    buildFeatures {
+        resValues = true
+    }
+
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".mqttpreview"
