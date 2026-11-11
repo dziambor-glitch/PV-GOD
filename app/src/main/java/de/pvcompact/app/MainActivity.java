@@ -50,6 +50,7 @@ public final class MainActivity extends Activity {
             maybeRefreshSources();
             ensureWattMeter();
             updateWattMeterTexts();
+            updateTariffHighlights();
             mainHandler.postDelayed(this, 15000L);
         }
     };
@@ -73,6 +74,9 @@ public final class MainActivity extends Activity {
     private long lastWattUiAt = 0L;
     private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
     private TextView wattYearText, wattTodayText;
+    private LinearLayout tariffDayRow, tariffNightRow;
+    private TextView tariffDayPrice, tariffNightPrice, tariffDayIcon, tariffNightIcon;
+    private TextView tariffDayBadge, tariffNightBadge;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
@@ -302,11 +306,10 @@ public final class MainActivity extends Activity {
                 UiKit.MINT),
                 metricLp(true));
 
-        String consumption = pv != null && pv.live.consumptionW != null
-                ? String.format(Locale.GERMANY, "%.0f W", pv.live.consumptionW)
-                : "—";
-        row1.addView(metric("VERBRAUCH", consumption, "Haus aktuell", UiKit.BLUE, UiKit.BLUE_SOFT),
-                metricLp(false));
+        // Current consumption is already displayed prominently in the live WattWächter card.
+        LinearLayout.LayoutParams pvNowLp = new LinearLayout.LayoutParams(-1, -2);
+        pvNowLp.setMargins(0, 0, 0, dp(12));
+        row1.getChildAt(0).setLayoutParams(pvNowLp);
         content.addView(row1);
 
         LinearLayout row2 = UiKit.row(this);
@@ -314,16 +317,12 @@ public final class MainActivity extends Activity {
         String tomorrow = forecast.size() > 1
                 ? String.format(Locale.GERMANY, "%.1f kWh", adjustedForecastKwh(forecast.get(1)))
                 : "—";
-        row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
+        String tomorrowWeather = forecast.size() > 1
+                ? weatherIcon(forecast.get(1).weatherCode) : "◌";
+        row2.addView(metric("MORGEN  " + tomorrowWeather,
+                        tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
                 metricLp(true));
-
-        double price = currentTariffPrice();
-        row2.addView(metric("STROMPREIS",
-                        String.format(Locale.GERMANY, "%.0f ct", price),
-                        isCheapNow() ? "Go günstig aktiv" : "Go Normaltarif",
-                        UiKit.PURPLE,
-                        UiKit.PURPLE_SOFT),
-                metricLp(false));
+        row2.addView(tariffCard(), metricLp(false));
         content.addView(row2);
 
         LocalDate yesterdayDate = LocalDate.now(BERLIN).minusDays(1);
@@ -426,15 +425,125 @@ public final class MainActivity extends Activity {
         refresh.setOnClickListener(v -> refreshAll());
         content.addView(refresh, buttonLp());
 
-        LinearLayout note = UiKit.card(this);
-        note.addView(UiKit.overline(this, "NULL-EINSPEISUNG", UiKit.GREEN));
-        TextView noteTitle = UiKit.text(this, "PV sinnvoll nutzen statt abregeln", 18, UiKit.INK);
-        noteTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        noteTitle.setPadding(0, dp(7), 0, dp(5));
-        note.addView(noteTitle);
-        note.addView(UiKit.caption(this,
-                "Später nutzt der Raspberry PV-Prognose, Batterie, Wärmepumpe und EV-Lader gemeinsam, damit möglichst wenig Solarenergie abgeregelt wird."));
-        content.addView(note);
+
+    }
+
+
+    /** Two always-visible Go tariffs; the valid one is emphasized using Europe/Berlin time. */
+    private LinearLayout tariffCard() {
+        LinearLayout card = UiKit.card(this);
+        card.setPadding(dp(10), dp(11), dp(10), dp(11));
+        card.addView(UiKit.overline(this, "STROMPREIS", UiKit.PURPLE));
+
+        tariffDayRow = tariffRow(true);
+        tariffNightRow = tariffRow(false);
+        card.addView(tariffDayRow);
+        LinearLayout.LayoutParams nightLp = new LinearLayout.LayoutParams(-1, -2);
+        nightLp.setMargins(0, dp(5), 0, 0);
+        card.addView(tariffNightRow, nightLp);
+        updateTariffHighlights();
+        return card;
+    }
+
+    private LinearLayout tariffRow(boolean day) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(5), dp(5), dp(5), dp(5));
+
+        LinearLayout top = UiKit.row(this);
+        TextView icon = UiKit.text(this, day ? "☀" : "☾", 18, UiKit.MUTED);
+        top.addView(icon, new LinearLayout.LayoutParams(dp(24), -2));
+
+        TextView price = UiKit.text(this, "", 18, UiKit.INK);
+        price.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        top.addView(price, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView badge = UiKit.pill(this, "Aktuell", Color.WHITE, UiKit.GREEN_DARK);
+        badge.setTextSize(9);
+        badge.setPadding(dp(5), dp(3), dp(5), dp(3));
+        top.addView(badge);
+        box.addView(top);
+
+        TextView detail = UiKit.text(this,
+                (day ? "Go Tagestarif · " + currentCheapEnd() + "–" + currentCheapStart()
+                        : "Go Nachttarif · " + currentCheapStart() + "–" + currentCheapEnd()),
+                10, UiKit.MUTED);
+        detail.setPadding(0, dp(1), 0, 0);
+        box.addView(detail);
+
+        if (day) {
+            tariffDayPrice = price;
+            tariffDayIcon = icon;
+            tariffDayBadge = badge;
+        } else {
+            tariffNightPrice = price;
+            tariffNightIcon = icon;
+            tariffNightBadge = badge;
+        }
+        return box;
+    }
+
+    private void updateTariffHighlights() {
+        if (tariffDayRow == null || tariffNightRow == null) return;
+        boolean cheapNow = isCheapNow();
+        double cheap = octopus != null && octopus.tariffFromApi && Double.isFinite(octopus.cheapCents)
+                ? octopus.cheapCents : parseDouble(prefs.get("cheap_price", "19"), 19);
+        double normal = octopus != null && octopus.tariffFromApi && Double.isFinite(octopus.normalCents)
+                ? octopus.normalCents : parseDouble(prefs.get("normal_price", "29"), 29);
+        if (tariffDayPrice != null) tariffDayPrice.setText(String.format(Locale.GERMANY, "%.0f ct", normal));
+        if (tariffNightPrice != null) tariffNightPrice.setText(String.format(Locale.GERMANY, "%.0f ct", cheap));
+        tariffDayRow.setBackground(UiKit.roundRect(this,
+                cheapNow ? Color.rgb(246, 247, 247) : UiKit.AMBER_SOFT, 11));
+        tariffNightRow.setBackground(UiKit.roundRect(this,
+                cheapNow ? UiKit.PURPLE_SOFT : Color.rgb(246, 247, 247), 11));
+        if (tariffDayPrice != null) tariffDayPrice.setTextColor(cheapNow ? UiKit.MUTED : UiKit.INK);
+        if (tariffNightPrice != null) tariffNightPrice.setTextColor(cheapNow ? UiKit.INK : UiKit.MUTED);
+        if (tariffDayIcon != null) tariffDayIcon.setTextColor(cheapNow ? UiKit.MUTED : UiKit.AMBER);
+        if (tariffNightIcon != null) tariffNightIcon.setTextColor(cheapNow ? UiKit.PURPLE : UiKit.MUTED);
+        if (tariffDayBadge != null) tariffDayBadge.setVisibility(cheapNow ? View.GONE : View.VISIBLE);
+        if (tariffNightBadge != null) tariffNightBadge.setVisibility(cheapNow ? View.VISIBLE : View.GONE);
+    }
+
+    private CharSequence styledWattYearLabel() {
+        String text = wattYearLabel();
+        android.text.SpannableString styled = new android.text.SpannableString(text);
+        int firstLineEnd = text.indexOf('\n');
+        if (firstLineEnd < 0) firstLineEnd = text.length();
+        if (firstLineEnd > 0) {
+            styled.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), 0, firstLineEnd,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            styled.setSpan(new android.text.style.RelativeSizeSpan(1.13f), 0, firstLineEnd,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return styled;
+    }
+
+    private CharSequence styledWattTodayLabel() {
+        android.text.SpannableStringBuilder styled =
+                new android.text.SpannableStringBuilder(wattTodayLabel());
+        colorWattMetric(styled, "Netzbezug heute (erfasst): ", UiKit.RED, false);
+        colorWattMetric(styled, "Stromkosten (geschätzt): ", UiKit.RED, false);
+        colorWattMetric(styled, "PV-Erzeugung heute: ", UiKit.GREEN, false);
+        colorWattMetric(styled, "PV-Wertpotenzial: ", UiKit.GREEN, true);
+        return styled;
+    }
+
+    private void colorWattMetric(android.text.SpannableStringBuilder text,
+                                 String prefix, int color, boolean stopAtRateDetail) {
+        int label = text.toString().indexOf(prefix);
+        if (label < 0) return;
+        int start = label + prefix.length();
+        int end = text.toString().indexOf('\n', start);
+        if (end < 0) end = text.length();
+        if (stopAtRateDetail) {
+            int explanatory = text.toString().indexOf(" (bei ", start);
+            if (explanatory >= 0 && explanatory < end) end = explanatory;
+        }
+        if (end <= start || text.subSequence(start, end).toString().contains("nicht verfügbar")) return;
+        text.setSpan(new android.text.style.ForegroundColorSpan(color), start, end,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        text.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), start, end,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
 
     private void heroToday() {
@@ -1709,7 +1818,7 @@ public final class MainActivity extends Activity {
             if (year == 2026) {
                 // The E320 was commissioned with a new meter in March 2026.
                 net = String.format(Locale.GERMANY, "%,.2f kWh", s.importKwh);
-                rangeNote = "seit Zählereinbau März 2026";
+                rangeNote = "";
             } else {
                 WattMeterHistoryStore.YearAnchor anchor = null;
                 try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
@@ -1726,9 +1835,9 @@ public final class MainActivity extends Activity {
         String pvAnnual = hasPvYear(year)
                 ? String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(year)) : "—";
         StringBuilder result = new StringBuilder();
-        result.append("Netzbezug ").append(year).append(": ").append(net)
-                .append("\n").append(rangeNote)
-                .append("\nPV-Erzeugung ").append(year).append(": ").append(pvAnnual);
+        result.append("Netzbezug ").append(year).append(": ").append(net);
+        if (year > 2026 && !rangeNote.isEmpty()) result.append("\n").append(rangeNote);
+        result.append("\nPV-Erzeugung ").append(year).append(": ").append(pvAnnual);
 
         if (year > 2026) {
             int prev = year - 1;
@@ -1895,8 +2004,8 @@ public final class MainActivity extends Activity {
         long now = System.currentTimeMillis();
         if (now - lastWattChartAt < 5000L) return;
         lastWattChartAt = now;
-        if (wattYearText != null) wattYearText.setText(wattYearLabel());
-        if (wattTodayText != null) wattTodayText.setText(wattTodayLabel());
+        if (wattYearText != null) wattYearText.setText(styledWattYearLabel());
+        if (wattTodayText != null) wattTodayText.setText(styledWattTodayLabel());
         if (!("Netz".equals(currentTab) || "Home".equals(currentTab))) return;
         try {
             if ("Netz".equals(currentTab) && wattHourChart != null) {
@@ -1940,20 +2049,21 @@ public final class MainActivity extends Activity {
         lp.setMargins(0, dp(11), 0, dp(11));
         card.addView(line, lp);
 
-        wattRegistersText = UiKit.text(this, wattRegisterLabel(), 14, UiKit.INK);
-        card.addView(wattRegistersText);
-        wattYearText = UiKit.text(this, wattYearLabel(), 13, UiKit.MUTED);
-        wattYearText.setPadding(0, dp(8), 0, dp(8));
-        wattYearText.setLineSpacing(dp(2), 1.05f);
+        wattYearText = UiKit.text(this, "", 15, UiKit.INK);
+        wattYearText.setText(styledWattYearLabel());
+        wattYearText.setPadding(0, dp(9), 0, dp(6));
+        wattYearText.setLineSpacing(dp(3), 1.08f);
         card.addView(wattYearText);
+        wattRegistersText = UiKit.text(this, wattRegisterLabel(), 12, UiKit.MUTED);
+        wattRegistersText.setPadding(0, 0, 0, dp(13));
+        card.addView(wattRegistersText);
 
         card.addView(UiKit.overline(this, "HEUTE · VORLÄUFIG", UiKit.BLUE));
-        wattTodayText = UiKit.text(this, wattTodayLabel(), 13, UiKit.INK);
+        wattTodayText = UiKit.text(this, "", 15, UiKit.INK);
+        wattTodayText.setText(styledWattTodayLabel());
         wattTodayText.setPadding(0, dp(7), 0, dp(7));
-        wattTodayText.setLineSpacing(dp(2), 1.08f);
+        wattTodayText.setLineSpacing(dp(3), 1.12f);
         card.addView(wattTodayText);
-        card.addView(UiKit.caption(this,
-                "PV-Wertpotenzial ist keine nachgewiesene Ersparnis. Mit Batterie können Eigenverbrauch, Ladung und Entladung abweichen."));
 
         if (homeGraph) {
             long now = System.currentTimeMillis();
