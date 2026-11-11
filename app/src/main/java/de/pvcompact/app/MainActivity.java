@@ -7,6 +7,8 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -38,7 +40,19 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final ZoneId BERLIN = ZoneId.of("Europe/Berlin");
 
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService io = Executors.newFixedThreadPool(3);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private long lastPvRefreshRequestMs, lastOctopusRefreshRequestMs, lastWattAttemptMs;
+    private boolean inForeground;
+    private final Runnable foregroundUpdates = new Runnable() {
+        @Override public void run() {
+            if (!inForeground || isFinishing()) return;
+            maybeRefreshSources();
+            ensureWattMeter();
+            updateWattMeterTexts();
+            mainHandler.postDelayed(this, 15000L);
+        }
+    };
     private final List<NavItem> navItems = new ArrayList<>();
 
     private Prefs prefs;
@@ -57,8 +71,9 @@ public final class MainActivity extends Activity {
     private volatile WattMeterMqttClient.Snapshot wattSnapshot;
     private String wattError = "";
     private long lastWattUiAt = 0L;
-    private TextView wattPowerText, wattRegistersText, wattStateText;
-    private GridPowerChartView wattHourChart, wattDayChart;
+    private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
+    private TextView wattYearText, wattTodayText;
+    private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
     @Override
@@ -74,17 +89,51 @@ public final class MainActivity extends Activity {
 
         buildShell();
         showTab("Home");
-        refreshPvForecast(false);
-
-        if (!prefs.get("oct_account", "").isEmpty()
-                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
-            refreshOctopus();
-        }
         startWattMeter();
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        inForeground = true;
+        mainHandler.removeCallbacks(foregroundUpdates);
+        mainHandler.post(foregroundUpdates);
+    }
+
+    @Override
+    protected void onPause() {
+        inForeground = false;
+        mainHandler.removeCallbacks(foregroundUpdates);
+        super.onPause();
+    }
+
+    private void maybeRefreshSources() {
+        long now = System.currentTimeMillis();
+        if (now - lastPvRefreshRequestMs > 2 * 60_000L) refreshPvForecast(false);
+        if (!prefs.get("oct_account", "").isEmpty()
+                && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())
+                && now - lastOctopusRefreshRequestMs > 45 * 60_000L) refreshOctopus();
+    }
+
+    private void ensureWattMeter() {
+        if (!prefs.getBool("watt_mqtt_enabled", false)
+                || prefs.get("watt_mqtt_host", "").trim().isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (now - lastWattAttemptMs < 45000L) return;
+        WattMeterMqttClient.Snapshot s = wattSnapshot;
+        if (wattMeter == null || s == null
+                || s.state.startsWith("Verbindung fehlgeschlagen")
+                || s.state.startsWith("Abo fehlgeschlagen")
+                || (s.livePowerReceivedAtMillis > 0
+                    && now - s.livePowerReceivedAtMillis > 100000L)
+                || (s.livePowerReceivedAtMillis == 0 && now - lastWattAttemptMs > 90000L)) {
+            startWattMeter();
+        }
+    }
+
+    @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(foregroundUpdates);
         if (wattMeter != null) wattMeter.close();
         if (wattHistory != null) wattHistory.close();
         io.shutdownNow();
@@ -219,6 +268,7 @@ public final class MainActivity extends Activity {
 
     private void showHome() {
         pageHeader(greeting(), "Dein Energie-Dashboard für heute");
+        showWattMeterCard();
 
         if (pv == null) {
             LinearLayout empty = UiKit.card(this);
@@ -241,7 +291,6 @@ public final class MainActivity extends Activity {
             heroToday();
         }
 
-        showWattMeterCard();
         content.addView(UiKit.sectionTitle(this, "Auf einen Blick"));
         LinearLayout row1 = UiKit.row(this);
         row1.setBaselineAligned(false);
@@ -1580,6 +1629,7 @@ public final class MainActivity extends Activity {
         }
         wattSnapshot = null;
         wattError = "";
+        lastWattAttemptMs = System.currentTimeMillis();
         if (!prefs.getBool("watt_mqtt_enabled", false)) return;
         String host = prefs.get("watt_mqtt_host", "").trim();
         if (host.isEmpty()) return;
@@ -1620,116 +1670,338 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private String wattPowerLabel() {
+    private boolean isWattFresh() {
         WattMeterMqttClient.Snapshot s = wattSnapshot;
-        if (s == null || s.powerW == null || s.livePowerReceivedAtMillis == 0
-                || System.currentTimeMillis() - s.livePowerReceivedAtMillis > 20000L)
-            return "—";
-        if (s.powerW >= 0)
-            return String.format(Locale.GERMANY, "%.0f W Bezug", s.powerW);
-        return String.format(Locale.GERMANY, "%.0f W Einspeisung", -s.powerW);
+        return s != null && s.powerW != null && s.livePowerReceivedAtMillis > 0
+                && System.currentTimeMillis() - s.livePowerReceivedAtMillis <= 20000L;
+    }
+
+    private boolean isWattExporting() {
+        return isWattFresh() && wattSnapshot.powerW < 0;
+    }
+
+    private String wattPowerLabel() {
+        if (!isWattFresh()) return "—";
+        return String.format(Locale.GERMANY, "%.0f W", Math.abs(wattSnapshot.powerW));
+    }
+
+    private String wattModeLabel() {
+        if (!isWattFresh()) return "Netzleistung wird geladen";
+        return isWattExporting() ? "Kurzfristige Rückspeisung" : "Aktueller Verbrauch";
+    }
+
+    private int wattActiveColor() {
+        return isWattExporting() ? UiKit.GREEN_DARK : UiKit.RED;
     }
 
     private String wattRegisterLabel() {
         WattMeterMqttClient.Snapshot s = wattSnapshot;
-        if (s == null) return "Zählerstände noch nicht empfangen";
-        String imp = s.importKwh == null ? "—"
-                : String.format(Locale.GERMANY, "%.3f", s.importKwh);
-        String exp = s.exportKwh == null ? "—"
-                : String.format(Locale.GERMANY, "%.3f", s.exportKwh);
-        return "1.8.0 Netzbezug " + imp + " kWh · 2.8.0 Einspeisung " + exp + " kWh";
+        if (s == null || s.importKwh == null) return "Aktueller Zählerstand: —";
+        return String.format(Locale.GERMANY, "Aktueller Zählerstand: %,.3f kWh", s.importKwh);
+    }
+
+    private String wattYearLabel() {
+        int year = LocalDate.now(BERLIN).getYear();
+        WattMeterMqttClient.Snapshot s = wattSnapshot;
+        String net = "—";
+        String rangeNote = "Basiswert fehlt";
+        if (s != null && s.importKwh != null) {
+            if (year == 2026) {
+                // The E320 was commissioned with a new meter in March 2026.
+                net = String.format(Locale.GERMANY, "%,.2f kWh", s.importKwh);
+                rangeNote = "seit Zählereinbau März 2026";
+            } else {
+                WattMeterHistoryStore.YearAnchor anchor = null;
+                try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
+                if (anchor != null && s.importKwh >= anchor.importKwh) {
+                    net = String.format(Locale.GERMANY, "%,.2f kWh",
+                            s.importKwh - anchor.importKwh);
+                    rangeNote = "seit " + new java.text.SimpleDateFormat("dd.MM. HH:mm", Locale.GERMANY)
+                            .format(new java.util.Date(anchor.firstObservedMs))
+                            + " Uhr (erster erfasster Stand)";
+                }
+            }
+        }
+
+        String pvAnnual = hasPvYear(year)
+                ? String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(year)) : "—";
+        StringBuilder result = new StringBuilder();
+        result.append("Netzbezug ").append(year).append(": ").append(net)
+                .append("\n").append(rangeNote)
+                .append("\nPV-Erzeugung ").append(year).append(": ").append(pvAnnual);
+
+        if (year > 2026) {
+            int prev = year - 1;
+            WattMeterHistoryStore.YearAnchor newAnchor = null;
+            WattMeterHistoryStore.YearAnchor prevAnchor = null;
+            try {
+                newAnchor = wattHistory.yearAnchor(year);
+                prevAnchor = wattHistory.yearAnchor(prev);
+            } catch (Exception ignored) {}
+            Double previousImport = null;
+            if (newAnchor != null) {
+                if (prev == 2026) previousImport = newAnchor.importKwh;
+                else if (prevAnchor != null && newAnchor.importKwh >= prevAnchor.importKwh)
+                    previousImport = newAnchor.importKwh - prevAnchor.importKwh;
+            }
+            if (previousImport != null) result.append("\nNetzbezug ").append(prev)
+                    .append(": ")
+                    .append(String.format(Locale.GERMANY, "%,.2f kWh", previousImport))
+                    .append(" (bis erstem Stand ").append(year).append(")");
+            if (hasPvYear(prev)) result.append("\nPV-Erzeugung ").append(prev).append(": ")
+                    .append(String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(prev)));
+        }
+        return result.toString();
+    }
+
+    private Double pvTodayKwh() {
+        if (pv == null) return null;
+        LocalDate today = LocalDate.now(BERLIN);
+        try {
+            if (pv.live != null
+                    && today.equals(LocalDate.parse(pv.live.date, DateTimeFormatter.BASIC_ISO_DATE))
+                    && Double.isFinite(pv.live.energyWh) && pv.live.energyWh >= 0)
+                return pv.live.energyWh / 1000.0;
+        } catch (Exception ignored) {}
+        if (pv.recentDays != null) for (PvOutputClient.Day day : pv.recentDays) {
+            try {
+                if (day != null && today.equals(LocalDate.parse(day.date, DateTimeFormatter.BASIC_ISO_DATE))
+                        && Double.isFinite(day.generatedWh) && day.generatedWh >= 0)
+                    return day.generatedWh / 1000.0;
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private Double pvHouseTodayKwh() {
+        if (pv == null) return null;
+        LocalDate today = LocalDate.now(BERLIN);
+        try {
+            if (pv.live != null
+                    && today.equals(LocalDate.parse(pv.live.date, DateTimeFormatter.BASIC_ISO_DATE))
+                    && pv.live.consumptionWh != null
+                    && Double.isFinite(pv.live.consumptionWh) && pv.live.consumptionWh >= 0)
+                return pv.live.consumptionWh / 1000.0;
+        } catch (Exception ignored) {}
+        if (pv.recentDays != null) for (PvOutputClient.Day day : pv.recentDays) {
+            try {
+                if (day != null && today.equals(LocalDate.parse(day.date, DateTimeFormatter.BASIC_ISO_DATE))
+                        && day.consumedWh != null && Double.isFinite(day.consumedWh)
+                        && day.consumedWh >= 0)
+                    return day.consumedWh / 1000.0;
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private String wattTodayLabel() {
+        long now = System.currentTimeMillis();
+        long midnight = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+        WattMeterHistoryStore.DayEstimate e = null;
+        try {
+            e = wattHistory.estimateDay(midnight, now,
+                    currentCheapStart(), currentCheapEnd());
+        } catch (Exception ignored) {}
+        StringBuilder result = new StringBuilder();
+        if (e != null && e.intervals > 0) {
+            String since = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
+                    .format(new java.util.Date(e.firstMs));
+            double cheapRate = parseDouble(prefs.get("cheap_price", "19"), 19);
+            double normalRate = parseDouble(prefs.get("normal_price", "29"), 29);
+            if (octopus != null && Double.isFinite(octopus.cheapCents)) cheapRate = octopus.cheapCents;
+            if (octopus != null && Double.isFinite(octopus.normalCents)) normalRate = octopus.normalCents;
+            double cost = (e.cheapKwh * cheapRate + e.normalKwh * normalRate) / 100.0;
+            result.append(String.format(Locale.GERMANY,
+                    "Netzbezug heute (erfasst): %.2f kWh\n", e.totalKwh()));
+            result.append(String.format(Locale.GERMANY,
+                    "Stromkosten (geschätzt): %.2f €\n", cost));
+            result.append(String.format(Locale.GERMANY,
+                    "Davon Nacht: %.2f kWh · Tag: %.2f kWh\n", e.cheapKwh, e.normalKwh));
+            result.append(String.format(Locale.GERMANY,
+                    "Abgedeckt: %.1f Stunden seit %s · keine Hochrechnung",
+                    e.coveredHours, since));
+        } else {
+            result.append("Netzbezug heute: noch keine ausreichenden Zählerstände");
+        }
+
+        Double pvKwh = pvTodayKwh();
+        if (pvKwh != null) {
+            result.append(String.format(Locale.GERMANY,
+                    "\nPV-Erzeugung heute: %.2f kWh", pvKwh));
+            double price = parseDouble(prefs.get("normal_price", "29"), 29);
+            result.append(String.format(Locale.GERMANY,
+                    "\nPV-Wertpotenzial: ca. %.2f € (bei %.0f ct/kWh)",
+                    pvKwh * price / 100.0, price));
+        } else result.append("\nPV-Erzeugung heute: nicht verfügbar");
+
+        Double house = pvHouseTodayKwh();
+        if (house != null) {
+            result.append(String.format(Locale.GERMANY,
+                    "\nHausverbrauch heute laut PVOutput: %.2f kWh", house));
+        } else {
+            result.append("\nHausverbrauch heute: noch nicht gemessen");
+        }
+        return result.toString();
     }
 
     private String wattStateLabel() {
         WattMeterMqttClient.Snapshot s = wattSnapshot;
         if (s == null) return wattError.isEmpty()
-                ? "MQTT: warte auf Verbindung" : "MQTT: " + wattError;
+                ? "MQTT: Verbindung wird aufgebaut" : "MQTT: " + wattError;
         long age = System.currentTimeMillis() - s.livePowerReceivedAtMillis;
         if (s.livePowerReceivedAtMillis > 0 && age >= 0 && age < 20000)
-            return "MQTT live · letzte Messung vor " + age / 1000 + " s";
-        return "MQTT: " + s.state + " · keine frischen Leistungswerte";
+            return "Live · letzte Messung vor " + age / 1000 + " s";
+        return "MQTT: " + s.state + " · keine frischen Messwerte";
+    }
+
+    private List<WattMeterHistoryStore.Point> pvOutputPlotPoints(long fromMs, long toMs) {
+        List<WattMeterHistoryStore.Point> result = new ArrayList<>();
+        if (pv == null || pv.live == null) return result;
+        LocalDate today = LocalDate.now(BERLIN);
+        try {
+            if (!today.equals(LocalDate.parse(pv.live.date, DateTimeFormatter.BASIC_ISO_DATE)))
+                return result;
+        } catch (Exception ignored) { return result; }
+        if (pv.history != null) for (PvOutputClient.Point p : pv.history) {
+            try {
+                LocalTime time = LocalTime.parse(p.time);
+                long ms = today.atTime(time).atZone(BERLIN).toInstant().toEpochMilli();
+                if (ms >= fromMs && ms <= toMs && Double.isFinite(p.powerW) && p.powerW >= 0)
+                    result.add(new WattMeterHistoryStore.Point(ms, p.powerW));
+            } catch (Exception ignored) {}
+        }
+        try {
+            LocalTime time = LocalTime.parse(pv.live.time);
+            long ms = today.atTime(time).atZone(BERLIN).toInstant().toEpochMilli();
+            if (ms >= fromMs && ms <= toMs && Double.isFinite(pv.live.powerW)
+                    && pv.live.powerW >= 0)
+                result.add(new WattMeterHistoryStore.Point(ms, pv.live.powerW));
+        } catch (Exception ignored) {}
+        result.sort((a, b) -> Long.compare(a.timeMs, b.timeMs));
+        return result;
     }
 
     private void updateWattMeterTexts() {
-        if (wattPowerText != null) wattPowerText.setText(wattPowerLabel());
+        if (wattPowerText != null) {
+            wattPowerText.setText(wattPowerLabel());
+            wattPowerText.setTextColor(wattActiveColor());
+        }
+        if (wattModeText != null) {
+            wattModeText.setText(wattModeLabel());
+            wattModeText.setTextColor(wattActiveColor());
+        }
         if (wattRegistersText != null) wattRegistersText.setText(wattRegisterLabel());
         if (wattStateText != null) wattStateText.setText(wattStateLabel());
         long now = System.currentTimeMillis();
-        if (!"Netz".equals(currentTab) || now - lastWattChartAt < 5000L) return;
+        if (now - lastWattChartAt < 5000L) return;
         lastWattChartAt = now;
+        if (wattYearText != null) wattYearText.setText(wattYearLabel());
+        if (wattTodayText != null) wattTodayText.setText(wattTodayLabel());
+        if (!("Netz".equals(currentTab) || "Home".equals(currentTab))) return;
         try {
-            if (wattHourChart != null)
-                wattHourChart.setData(wattHistory.load(now - 3600000L, now),
-                        now - 3600000L, now, false);
-            if (wattDayChart != null) {
-                long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+            if ("Netz".equals(currentTab) && wattHourChart != null) {
+                long from = now - 3600000L;
+                wattHourChart.setData(wattHistory.load(from, now), from, now, false);
+                wattHourChart.setPvData(pvOutputPlotPoints(from, now));
+            }
+            long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+            if ("Netz".equals(currentTab) && wattDayChart != null) {
                 wattDayChart.setData(wattHistory.load(start, now), start, now, true);
+                wattDayChart.setPvData(pvOutputPlotPoints(start, now));
+            }
+            if ("Home".equals(currentTab) && wattHomeChart != null) {
+                wattHomeChart.setData(wattHistory.load(start, now), start, now, true);
+                wattHomeChart.setPvData(pvOutputPlotPoints(start, now));
             }
         } catch (Exception ignored) {}
     }
 
     private void showWattMeterCard() {
+        showWattMeterCard(true);
+    }
+
+    private void showWattMeterCard(boolean homeGraph) {
         if (!prefs.getBool("watt_mqtt_enabled", false)) return;
         LinearLayout card = UiKit.card(this);
-        card.addView(UiKit.overline(this, "NETZBEZUG · WATTWÄCHTER", UiKit.BLUE));
-        wattPowerText = UiKit.text(this, wattPowerLabel(), 27, UiKit.INK);
+        card.addView(UiKit.overline(this, "LIVE · NETZ & PV", UiKit.BLUE));
+
+        wattModeText = UiKit.text(this, wattModeLabel(), 14, wattActiveColor());
+        wattModeText.setPadding(0, dp(8), 0, dp(1));
+        card.addView(wattModeText);
+        wattPowerText = UiKit.text(this, wattPowerLabel(), 36, wattActiveColor());
         wattPowerText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        wattPowerText.setPadding(0, dp(7), 0, dp(4));
+        wattPowerText.setPadding(0, dp(2), 0, dp(5));
         card.addView(wattPowerText);
-        wattRegistersText = UiKit.caption(this, wattRegisterLabel());
-        card.addView(wattRegistersText);
         wattStateText = UiKit.caption(this, wattStateLabel());
-        wattStateText.setPadding(0, dp(5), 0, dp(9));
         card.addView(wattStateText);
-        Button details = UiKit.secondaryButton(this, "Netzbezug & Tagesgrafik ansehen");
+
+        View line = UiKit.divider(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(1));
+        lp.setMargins(0, dp(11), 0, dp(11));
+        card.addView(line, lp);
+
+        wattRegistersText = UiKit.text(this, wattRegisterLabel(), 14, UiKit.INK);
+        card.addView(wattRegistersText);
+        wattYearText = UiKit.text(this, wattYearLabel(), 13, UiKit.MUTED);
+        wattYearText.setPadding(0, dp(8), 0, dp(8));
+        wattYearText.setLineSpacing(dp(2), 1.05f);
+        card.addView(wattYearText);
+
+        card.addView(UiKit.overline(this, "HEUTE · VORLÄUFIG", UiKit.BLUE));
+        wattTodayText = UiKit.text(this, wattTodayLabel(), 13, UiKit.INK);
+        wattTodayText.setPadding(0, dp(7), 0, dp(7));
+        wattTodayText.setLineSpacing(dp(2), 1.08f);
+        card.addView(wattTodayText);
+        card.addView(UiKit.caption(this,
+                "PV-Wertpotenzial ist keine nachgewiesene Ersparnis. Mit Batterie können Eigenverbrauch, Ladung und Entladung abweichen."));
+
+        if (homeGraph) {
+            long now = System.currentTimeMillis();
+            long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+            TextView graphTitle = UiKit.text(this, "Heute · PV und Netzleistung", 16, UiKit.INK);
+            graphTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            graphTitle.setPadding(0, dp(18), 0, dp(4));
+            card.addView(graphTitle);
+            wattHomeChart = new GridPowerChartView(this);
+            try {
+                wattHomeChart.setData(wattHistory.load(start, now), start, now, true);
+                wattHomeChart.setPvData(pvOutputPlotPoints(start, now));
+            } catch (Exception ignored) {}
+            card.addView(wattHomeChart, new LinearLayout.LayoutParams(-1, dp(218)));
+            card.addView(UiKit.caption(this,
+                    "Rot: Netzbezug · Grün: PV-Erzeugung. Lücken bleiben sichtbar."));
+        }
+
+        Button details = UiKit.secondaryButton(this, "Netzverlauf & Tarifhistorie");
         details.setOnClickListener(v -> showTab("Netz"));
-        card.addView(details, new LinearLayout.LayoutParams(-1, dp(45)));
+        LinearLayout.LayoutParams button = new LinearLayout.LayoutParams(-1, dp(44));
+        button.setMargins(0, dp(11), 0, 0);
+        card.addView(details, button);
         content.addView(card);
     }
 
     private void showGridMeter() {
-        pageHeader("Netzbezug live", "WattWächter · aktuelle Netzleistung und Verlauf");
+        pageHeader("Netzbezug live", "WattWächter + PVOutput · aktuelle Netzleistung und Verlauf");
         if (!prefs.getBool("watt_mqtt_enabled", false)) {
             emptyState("WattWächter noch nicht verbunden",
-                    "Unter Einstellungen kannst du einen TLS-MQTT-Broker konfigurieren.",
+                    "Unter Einstellungen kannst du deinen TLS-MQTT-Broker konfigurieren.",
                     "MQTT einrichten", v -> showTab("Einstellungen"));
             return;
         }
-        showWattMeterCard();
-
-        java.time.ZonedDateTime now = java.time.ZonedDateTime.now(BERLIN);
-        long currentMs = System.currentTimeMillis();
-        long startOfDayMs = now.toLocalDate().atStartOfDay(BERLIN).toInstant().toEpochMilli();
-        WattMeterHistoryStore.RegisterDelta delta = null;
-        try { delta = wattHistory.dayDelta(startOfDayMs, currentMs); }
-        catch (Exception ignored) {}
-        LinearLayout today = UiKit.card(this);
-        today.addView(UiKit.overline(this, "HEUTE · VORLÄUFIG", UiKit.BLUE));
-        if (delta == null) {
-            today.addView(UiKit.caption(this,
-                    "Noch keine zwei Zählerstand-Messpunkte für heute. Der Tageswert wird erst nach weiteren MQTT-Werten angezeigt."));
-        } else {
-            String first = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
-                    .format(new java.util.Date(delta.startMs));
-            today.addView(UiKit.value(this, String.format(Locale.GERMANY, "%.3f kWh", delta.importKwh),
-                    UiKit.INK));
-            today.addView(UiKit.caption(this,
-                    "Netzbezug seit " + first + " Uhr · nicht der vollständige Tagesverbrauch"));
-            today.addView(UiKit.caption(this,
-                    String.format(Locale.GERMANY, "Regelungs-Einspeisung seit %s Uhr: %.3f kWh",
-                            first, delta.exportKwh)));
-        }
-        content.addView(today);
-        content.addView(UiKit.sectionTitle(this, "Netzleistung · letzte 60 Minuten"));
-        wattHourChart = addWattGraph(currentMs - 3600000L, currentMs, false);
-        content.addView(UiKit.sectionTitle(this, "Netzleistung · heute"));
-        wattDayChart = addWattGraph(startOfDayMs, currentMs, true);
+        showWattMeterCard(false);
+        long now = System.currentTimeMillis();
+        long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+        content.addView(UiKit.sectionTitle(this, "Leistung · letzte 60 Minuten"));
+        wattHourChart = addWattGraph(now - 3600000L, now, false);
+        content.addView(UiKit.sectionTitle(this, "Leistung · heute"));
+        wattDayChart = addWattGraph(start, now, true);
         TextView note = UiKit.caption(this,
-                "Blau: Netzbezug. Orange: kurzzeitige Einspeisung. Die Kurve wird nur bei geöffnetem bzw. laufendem PV Compact per MQTT mitgeschrieben. Zeiträume ohne Messwerte bleiben bewusst leer. Eine spätere lokale Synchronisierung der WattWächter-Historie kann diese Lücken schließen.");
+                "Rot: tatsächlicher Netzbezug am Zähler. Dunkelgrün: PV-Leistung aus PVOutput. "
+                        + "Die Werte sind unterschiedlich zeitlich aufgelöst. Fehlende Zeiten werden nicht interpoliert. "
+                        + "Der Gesamtverbrauch im Haus kann ohne separate Batterieflüsse nicht zuverlässig aus beiden Kurven berechnet werden.");
         note.setPadding(dp(5), dp(8), dp(5), dp(13));
         content.addView(note);
-
-        content.addView(UiKit.sectionTitle(this, "Octopus · bestätigte Tarifhistorie"));
+        content.addView(UiKit.sectionTitle(this, "Octopus · historische Tarifdaten"));
         showOctopusDailyTariffChart();
         showOctopusHourlyTariffChart();
     }
@@ -1740,9 +2012,10 @@ public final class MainActivity extends Activity {
         List<WattMeterHistoryStore.Point> points = Collections.emptyList();
         try { points = wattHistory.load(fromMs, toMs); } catch (Exception ignored) {}
         chart.setData(points, fromMs, toMs, day);
+        chart.setPvData(pvOutputPlotPoints(fromMs, toMs));
         card.addView(chart, new LinearLayout.LayoutParams(-1, dp(240)));
         card.addView(UiKit.caption(this,
-                points.size() + " tatsächlich gespeicherte Messpunkte beim Öffnen · keine Hochrechnung"));
+                "Echte Messwerte aus PVOutput und WattWächter · keine künstlichen Nullwerte"));
         content.addView(card);
         return chart;
     }
@@ -2356,6 +2629,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshPvForecast(boolean forceLive) {
+        lastPvRefreshRequestMs = System.currentTimeMillis();
         io.execute(() -> {
             PvOutputClient.Dashboard newPv = pv;
             List<ForecastClient.Day> newForecast = forecast;
@@ -2417,6 +2691,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshOctopus(String email, String password) {
+        lastOctopusRefreshRequestMs = System.currentTimeMillis();
         io.execute(() -> {
             try {
                 OctopusClient client = new OctopusClient(

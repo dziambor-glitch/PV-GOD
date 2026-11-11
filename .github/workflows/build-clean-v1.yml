@@ -7,6 +7,7 @@ on:
       - pvcompact-clean-v1
       - main
       - feature/wattwaechter-mqtt-cloud-v179
+      - feature/wattwaechter-home-v180
       - stats-meter-reading-v177
       - octopus-day-validation-v176
       - octopus-day-breakdown-v175
@@ -74,6 +75,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-v1.7.9-preview
+          name: PVCompact-v1.8.0-live-preview
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

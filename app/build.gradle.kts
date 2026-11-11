@@ -10,8 +10,8 @@ android {
         applicationId = "de.pvcompact.app.clean"
         minSdk = 26
         targetSdk = 36
-        versionCode = 179
-        versionName = "1.7.9"
+        versionCode = 180
+        versionName = "1.8.0"
     }
 
     buildFeatures {
@@ -20,9 +20,9 @@ android {
 
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = ".mqttpreview"
-            versionNameSuffix = "-mqtt-preview"
-            resValue("string", "app_name", "PV Compact MQTT Preview")
+            applicationIdSuffix = ".mqttv180"
+            versionNameSuffix = "-live-preview"
+            resValue("string", "app_name", "PV Compact Live Preview")
         }
         release {
             isMinifyEnabled = false
