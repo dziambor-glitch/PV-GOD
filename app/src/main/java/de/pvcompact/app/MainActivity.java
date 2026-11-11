@@ -1597,8 +1597,13 @@ public final class MainActivity extends Activity {
                                 && System.currentTimeMillis() - snapshot.livePowerReceivedAtMillis < 20000L) {
                             try {
                                 wattHistory.add(snapshot.livePowerReceivedAtMillis, snapshot.powerW);
-                                if (snapshot.importKwh != null && snapshot.exportKwh != null)
-                                    wattHistory.addRegisters(System.currentTimeMillis(),
+                                long when = System.currentTimeMillis();
+                                if (snapshot.importKwh != null && snapshot.exportKwh != null
+                                        && snapshot.freshImportReceivedAtMillis > 0
+                                        && snapshot.freshExportReceivedAtMillis > 0
+                                        && when - snapshot.freshImportReceivedAtMillis < 120000L
+                                        && when - snapshot.freshExportReceivedAtMillis < 120000L)
+                                    wattHistory.addRegisters(when,
                                             snapshot.importKwh, snapshot.exportKwh);
                             } catch (Exception ignored) {
                                 // A broken history database must not stop the live telemetry.
