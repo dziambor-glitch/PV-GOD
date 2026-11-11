@@ -52,11 +52,18 @@ public final class MainActivity extends Activity {
     private String pvError = "";
     private String forecastError = "";
     private String octopusError = "";
+    private WattMeterMqttClient wattMeter;
+    private WattMeterHistoryStore wattHistory;
+    private volatile WattMeterMqttClient.Snapshot wattSnapshot;
+    private String wattError = "";
+    private long lastWattUiAt = 0L;
+    private TextView wattPowerText, wattRegistersText, wattStateText;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = new Prefs(this);
+        wattHistory = new WattMeterHistoryStore(this);
 
         getWindow().setStatusBarColor(UiKit.BG);
         getWindow().setNavigationBarColor(UiKit.CARD);
@@ -71,10 +78,13 @@ public final class MainActivity extends Activity {
                 && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
             refreshOctopus();
         }
+        startWattMeter();
     }
 
     @Override
     protected void onDestroy() {
+        if (wattMeter != null) wattMeter.close();
+        if (wattHistory != null) wattHistory.close();
         io.shutdownNow();
         super.onDestroy();
     }
@@ -175,6 +185,9 @@ public final class MainActivity extends Activity {
             case "Octopus":
                 showOctopus();
                 break;
+            case "Netz":
+                showGridMeter();
+                break;
             case "Statistik":
                 showStatistics();
                 break;
@@ -226,6 +239,7 @@ public final class MainActivity extends Activity {
             heroToday();
         }
 
+        showWattMeterCard();
         content.addView(UiKit.sectionTitle(this, "Auf einen Blick"));
         LinearLayout row1 = UiKit.row(this);
         row1.setBaselineAligned(false);
@@ -344,6 +358,13 @@ public final class MainActivity extends Activity {
             octopusStatus = octopusError.isEmpty() ? "optional" : "Fehler";
         }
         statusCard.addView(statusLine("Octopus Energy", smartMeterOk, octopusStatus));
+        statusCard.addView(UiKit.divider(this), dividerLp());
+        boolean mqttConfigured = prefs.getBool("watt_mqtt_enabled", false)
+                && !prefs.get("watt_mqtt_host", "").isEmpty();
+        statusCard.addView(statusLine("WattWächter MQTT", mqttConfigured
+                && wattSnapshot != null && "Verbunden".equals(wattSnapshot.state),
+                mqttConfigured ? (wattSnapshot == null ? "Verbindung wird aufgebaut"
+                        : wattSnapshot.state) : "optional · noch nicht eingerichtet"));
         statusCard.addView(UiKit.divider(this), dividerLp());
         boolean pi = !prefs.get("controller_url", "").isEmpty();
         statusCard.addView(statusLine("Raspberry Controller", pi,
@@ -850,6 +871,7 @@ public final class MainActivity extends Activity {
                     UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
             content.addView(r2);
 
+            showOctopusDailyTariffChart();
             List<EnergyPeriod> recentDays = recentGridDayBreakdowns();
             if (!recentDays.isEmpty()) {
                 LinearLayout daysCard = UiKit.card(this);
@@ -1779,6 +1801,32 @@ public final class MainActivity extends Activity {
         autoCard.addView(ev);
         content.addView(autoCard);
 
+        LinearLayout wattCard = settingsCard("WattWächter Plus",
+                "Live-Netzbezug über externen MQTT-Broker mit TLS · kein Raspberry erforderlich");
+        CheckBox wattEnabled = new CheckBox(this);
+        wattEnabled.setText("WattWächter MQTT aktivieren");
+        wattEnabled.setTextColor(UiKit.INK);
+        wattEnabled.setChecked(prefs.getBool("watt_mqtt_enabled", false));
+        wattCard.addView(wattEnabled);
+        EditText wattHost = addLabeledField(wattCard, "Broker-Hostname",
+                "Nur Hostname, ohne ssl:// oder Port (z. B. EMQX-Endpunkt)",
+                prefs.get("watt_mqtt_host", ""), false);
+        EditText wattPort = addLabeledField(wattCard, "TLS-Port",
+                "Standard 8883",
+                prefs.get("watt_mqtt_port", "8883"), false);
+        EditText wattTopic = addLabeledField(wattCard, "MQTT Topic-Prefix",
+                "Exakt den Prefix aus dem WattWächter übernehmen, ohne /#",
+                prefs.get("watt_mqtt_topic", ""), false);
+        EditText wattUser = addLabeledField(wattCard, "MQTT-Benutzername",
+                "MQTT-Zugang deines Brokers",
+                prefs.get("watt_mqtt_user", ""), false);
+        EditText wattPassword = addLabeledField(wattCard, "MQTT-Passwort",
+                "Im Android Keystore verschlüsselt gespeichert",
+                prefs.getSecret("watt_mqtt_password"), true);
+        wattCard.addView(UiKit.caption(this,
+                "Die Kurve enthält nur wirklich empfangene Werte. Fehlende Zeiten sind keine 0-kWh-Zeiten. Octopus bleibt die Quelle für die historischen Tarifstatistiken."));
+        content.addView(wattCard);
+
         Button save = UiKit.primaryButton(this, "Einstellungen speichern");
         save.setOnClickListener(v -> {
             prefs.put("pv_system", pvSystem.getText().toString());
@@ -1813,6 +1861,13 @@ public final class MainActivity extends Activity {
             prefs.put("cheap_price", cheapPrice.getText().toString());
             prefs.put("normal_price", normalPrice.getText().toString());
 
+            prefs.putBool("watt_mqtt_enabled", wattEnabled.isChecked());
+            prefs.put("watt_mqtt_host", wattHost.getText().toString());
+            prefs.put("watt_mqtt_port", wattPort.getText().toString());
+            prefs.put("watt_mqtt_topic", wattTopic.getText().toString());
+            prefs.put("watt_mqtt_user", wattUser.getText().toString());
+            prefs.putSecret("watt_mqtt_password", wattPassword.getText().toString());
+
             prefs.put("controller_url", controllerUrl.getText().toString());
             prefs.putSecret("controller_token", controllerToken.getText().toString());
             prefs.put("battery_kwh", battery.getText().toString());
@@ -1824,6 +1879,7 @@ public final class MainActivity extends Activity {
             prefs.putBool("ev_enabled", ev.isChecked());
 
             Toast.makeText(this, "Gespeichert", Toast.LENGTH_SHORT).show();
+            startWattMeter();
             pv = null;
             forecast = Collections.emptyList();
             octopus = null;
@@ -1837,7 +1893,7 @@ public final class MainActivity extends Activity {
         content.addView(save, buttonLp());
 
         TextView secure = UiKit.caption(this,
-                "API-Schlüssel, Refresh Tokens und Controller Token werden verschlüsselt im Android Keystore gespeichert und nie in GitHub geschrieben.");
+                "API-Schlüssel, MQTT-Passwort, Refresh Tokens und Controller Token werden verschlüsselt im Android Keystore gespeichert und nie in GitHub geschrieben.");
         secure.setPadding(dp(4), dp(4), dp(4), dp(12));
         content.addView(secure);
     }
