@@ -52,11 +52,20 @@ public final class MainActivity extends Activity {
     private String pvError = "";
     private String forecastError = "";
     private String octopusError = "";
+    private WattMeterMqttClient wattMeter;
+    private WattMeterHistoryStore wattHistory;
+    private volatile WattMeterMqttClient.Snapshot wattSnapshot;
+    private String wattError = "";
+    private long lastWattUiAt = 0L;
+    private TextView wattPowerText, wattRegistersText, wattStateText;
+    private GridPowerChartView wattHourChart, wattDayChart;
+    private long lastWattChartAt = 0L;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = new Prefs(this);
+        wattHistory = new WattMeterHistoryStore(this);
 
         getWindow().setStatusBarColor(UiKit.BG);
         getWindow().setNavigationBarColor(UiKit.CARD);
@@ -71,10 +80,13 @@ public final class MainActivity extends Activity {
                 && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
             refreshOctopus();
         }
+        startWattMeter();
     }
 
     @Override
     protected void onDestroy() {
+        if (wattMeter != null) wattMeter.close();
+        if (wattHistory != null) wattHistory.close();
         io.shutdownNow();
         super.onDestroy();
     }
@@ -175,6 +187,9 @@ public final class MainActivity extends Activity {
             case "Octopus":
                 showOctopus();
                 break;
+            case "Netz":
+                showGridMeter();
+                break;
             case "Statistik":
                 showStatistics();
                 break;
@@ -226,6 +241,7 @@ public final class MainActivity extends Activity {
             heroToday();
         }
 
+        showWattMeterCard();
         content.addView(UiKit.sectionTitle(this, "Auf einen Blick"));
         LinearLayout row1 = UiKit.row(this);
         row1.setBaselineAligned(false);
@@ -344,6 +360,13 @@ public final class MainActivity extends Activity {
             octopusStatus = octopusError.isEmpty() ? "optional" : "Fehler";
         }
         statusCard.addView(statusLine("Octopus Energy", smartMeterOk, octopusStatus));
+        statusCard.addView(UiKit.divider(this), dividerLp());
+        boolean mqttConfigured = prefs.getBool("watt_mqtt_enabled", false)
+                && !prefs.get("watt_mqtt_host", "").isEmpty();
+        statusCard.addView(statusLine("WattWächter MQTT", mqttConfigured
+                && wattSnapshot != null && "Verbunden".equals(wattSnapshot.state),
+                mqttConfigured ? (wattSnapshot == null ? "Verbindung wird aufgebaut"
+                        : wattSnapshot.state) : "optional · noch nicht eingerichtet"));
         statusCard.addView(UiKit.divider(this), dividerLp());
         boolean pi = !prefs.get("controller_url", "").isEmpty();
         statusCard.addView(statusLine("Raspberry Controller", pi,
@@ -850,6 +873,7 @@ public final class MainActivity extends Activity {
                     UiKit.BLUE, UiKit.BLUE_SOFT), metricLp(false));
             content.addView(r2);
 
+            showOctopusDailyTariffChart();
             List<EnergyPeriod> recentDays = recentGridDayBreakdowns();
             if (!recentDays.isEmpty()) {
                 LinearLayout daysCard = UiKit.card(this);
@@ -1546,6 +1570,255 @@ public final class MainActivity extends Activity {
         return row;
     }
 
+
+    // -------------- WattWächter: cloud MQTT for live data --------------
+
+    private void startWattMeter() {
+        if (wattMeter != null) {
+            wattMeter.close();
+            wattMeter = null;
+        }
+        wattSnapshot = null;
+        wattError = "";
+        if (!prefs.getBool("watt_mqtt_enabled", false)) return;
+        String host = prefs.get("watt_mqtt_host", "").trim();
+        if (host.isEmpty()) return;
+        try {
+            wattMeter = new WattMeterMqttClient(
+                    host,
+                    parseInt(prefs.get("watt_mqtt_port", "8883"), 8883),
+                    prefs.get("watt_mqtt_user", ""),
+                    prefs.getSecret("watt_mqtt_password"),
+                    prefs.get("watt_mqtt_topic", ""),
+                    snapshot -> {
+                        wattSnapshot = snapshot;
+                        if (wattHistory != null && snapshot.livePowerReceivedAtMillis > 0L
+                                && snapshot.powerW != null
+                                && System.currentTimeMillis() - snapshot.livePowerReceivedAtMillis < 20000L) {
+                            try {
+                                wattHistory.add(snapshot.livePowerReceivedAtMillis, snapshot.powerW);
+                                long when = System.currentTimeMillis();
+                                if (snapshot.importKwh != null && snapshot.exportKwh != null
+                                        && snapshot.freshImportReceivedAtMillis > 0
+                                        && snapshot.freshExportReceivedAtMillis > 0
+                                        && when - snapshot.freshImportReceivedAtMillis < 120000L
+                                        && when - snapshot.freshExportReceivedAtMillis < 120000L)
+                                    wattHistory.addRegisters(when,
+                                            snapshot.importKwh, snapshot.exportKwh);
+                            } catch (Exception ignored) {
+                                // A broken history database must not stop the live telemetry.
+                            }
+                        }
+                        long now = System.currentTimeMillis();
+                        if (now - lastWattUiAt < 900L) return;
+                        lastWattUiAt = now;
+                        runOnUiThread(this::updateWattMeterTexts);
+                    }
+            );
+        } catch (Exception e) {
+            wattError = cleanError(e);
+        }
+    }
+
+    private String wattPowerLabel() {
+        WattMeterMqttClient.Snapshot s = wattSnapshot;
+        if (s == null || s.powerW == null || s.livePowerReceivedAtMillis == 0
+                || System.currentTimeMillis() - s.livePowerReceivedAtMillis > 20000L)
+            return "—";
+        if (s.powerW >= 0)
+            return String.format(Locale.GERMANY, "%.0f W Bezug", s.powerW);
+        return String.format(Locale.GERMANY, "%.0f W Einspeisung", -s.powerW);
+    }
+
+    private String wattRegisterLabel() {
+        WattMeterMqttClient.Snapshot s = wattSnapshot;
+        if (s == null) return "Zählerstände noch nicht empfangen";
+        String imp = s.importKwh == null ? "—"
+                : String.format(Locale.GERMANY, "%.3f", s.importKwh);
+        String exp = s.exportKwh == null ? "—"
+                : String.format(Locale.GERMANY, "%.3f", s.exportKwh);
+        return "1.8.0 Netzbezug " + imp + " kWh · 2.8.0 Einspeisung " + exp + " kWh";
+    }
+
+    private String wattStateLabel() {
+        WattMeterMqttClient.Snapshot s = wattSnapshot;
+        if (s == null) return wattError.isEmpty()
+                ? "MQTT: warte auf Verbindung" : "MQTT: " + wattError;
+        long age = System.currentTimeMillis() - s.livePowerReceivedAtMillis;
+        if (s.livePowerReceivedAtMillis > 0 && age >= 0 && age < 20000)
+            return "MQTT live · letzte Messung vor " + age / 1000 + " s";
+        return "MQTT: " + s.state + " · keine frischen Leistungswerte";
+    }
+
+    private void updateWattMeterTexts() {
+        if (wattPowerText != null) wattPowerText.setText(wattPowerLabel());
+        if (wattRegistersText != null) wattRegistersText.setText(wattRegisterLabel());
+        if (wattStateText != null) wattStateText.setText(wattStateLabel());
+        long now = System.currentTimeMillis();
+        if (!"Netz".equals(currentTab) || now - lastWattChartAt < 5000L) return;
+        lastWattChartAt = now;
+        try {
+            if (wattHourChart != null)
+                wattHourChart.setData(wattHistory.load(now - 3600000L, now),
+                        now - 3600000L, now, false);
+            if (wattDayChart != null) {
+                long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+                wattDayChart.setData(wattHistory.load(start, now), start, now, true);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void showWattMeterCard() {
+        if (!prefs.getBool("watt_mqtt_enabled", false)) return;
+        LinearLayout card = UiKit.card(this);
+        card.addView(UiKit.overline(this, "NETZBEZUG · WATTWÄCHTER", UiKit.BLUE));
+        wattPowerText = UiKit.text(this, wattPowerLabel(), 27, UiKit.INK);
+        wattPowerText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattPowerText.setPadding(0, dp(7), 0, dp(4));
+        card.addView(wattPowerText);
+        wattRegistersText = UiKit.caption(this, wattRegisterLabel());
+        card.addView(wattRegistersText);
+        wattStateText = UiKit.caption(this, wattStateLabel());
+        wattStateText.setPadding(0, dp(5), 0, dp(9));
+        card.addView(wattStateText);
+        Button details = UiKit.secondaryButton(this, "Netzbezug & Tagesgrafik ansehen");
+        details.setOnClickListener(v -> showTab("Netz"));
+        card.addView(details, new LinearLayout.LayoutParams(-1, dp(45)));
+        content.addView(card);
+    }
+
+    private void showGridMeter() {
+        pageHeader("Netzbezug live", "WattWächter · aktuelle Netzleistung und Verlauf");
+        if (!prefs.getBool("watt_mqtt_enabled", false)) {
+            emptyState("WattWächter noch nicht verbunden",
+                    "Unter Einstellungen kannst du einen TLS-MQTT-Broker konfigurieren.",
+                    "MQTT einrichten", v -> showTab("Einstellungen"));
+            return;
+        }
+        showWattMeterCard();
+
+        java.time.ZonedDateTime now = java.time.ZonedDateTime.now(BERLIN);
+        long currentMs = System.currentTimeMillis();
+        long startOfDayMs = now.toLocalDate().atStartOfDay(BERLIN).toInstant().toEpochMilli();
+        WattMeterHistoryStore.RegisterDelta delta = null;
+        try { delta = wattHistory.dayDelta(startOfDayMs, currentMs); }
+        catch (Exception ignored) {}
+        LinearLayout today = UiKit.card(this);
+        today.addView(UiKit.overline(this, "HEUTE · VORLÄUFIG", UiKit.BLUE));
+        if (delta == null) {
+            today.addView(UiKit.caption(this,
+                    "Noch keine zwei Zählerstand-Messpunkte für heute. Der Tageswert wird erst nach weiteren MQTT-Werten angezeigt."));
+        } else {
+            String first = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
+                    .format(new java.util.Date(delta.startMs));
+            today.addView(UiKit.value(this, String.format(Locale.GERMANY, "%.3f kWh", delta.importKwh),
+                    UiKit.INK));
+            today.addView(UiKit.caption(this,
+                    "Netzbezug seit " + first + " Uhr · nicht der vollständige Tagesverbrauch"));
+            today.addView(UiKit.caption(this,
+                    String.format(Locale.GERMANY, "Regelungs-Einspeisung seit %s Uhr: %.3f kWh",
+                            first, delta.exportKwh)));
+        }
+        content.addView(today);
+        content.addView(UiKit.sectionTitle(this, "Netzleistung · letzte 60 Minuten"));
+        wattHourChart = addWattGraph(currentMs - 3600000L, currentMs, false);
+        content.addView(UiKit.sectionTitle(this, "Netzleistung · heute"));
+        wattDayChart = addWattGraph(startOfDayMs, currentMs, true);
+        TextView note = UiKit.caption(this,
+                "Blau: Netzbezug. Orange: kurzzeitige Einspeisung. Die Kurve wird nur bei geöffnetem bzw. laufendem PV Compact per MQTT mitgeschrieben. Zeiträume ohne Messwerte bleiben bewusst leer. Eine spätere lokale Synchronisierung der WattWächter-Historie kann diese Lücken schließen.");
+        note.setPadding(dp(5), dp(8), dp(5), dp(13));
+        content.addView(note);
+
+        content.addView(UiKit.sectionTitle(this, "Octopus · bestätigte Tarifhistorie"));
+        showOctopusDailyTariffChart();
+        showOctopusHourlyTariffChart();
+    }
+
+    private GridPowerChartView addWattGraph(long fromMs, long toMs, boolean day) {
+        LinearLayout card = UiKit.card(this);
+        GridPowerChartView chart = new GridPowerChartView(this);
+        List<WattMeterHistoryStore.Point> points = Collections.emptyList();
+        try { points = wattHistory.load(fromMs, toMs); } catch (Exception ignored) {}
+        chart.setData(points, fromMs, toMs, day);
+        card.addView(chart, new LinearLayout.LayoutParams(-1, dp(240)));
+        card.addView(UiKit.caption(this,
+                points.size() + " tatsächlich gespeicherte Messpunkte beim Öffnen · keine Hochrechnung"));
+        content.addView(card);
+        return chart;
+    }
+
+    private void showOctopusDailyTariffChart() {
+        if (octopus == null || !octopus.smartMeterDataAvailable) return;
+        List<EnergyPeriod> available = new ArrayList<>();
+        LocalDate today = LocalDate.now(BERLIN);
+        for (int n = 1; n <= 40 && available.size() < 10; n++) {
+            LocalDate date = today.minusDays(n);
+            EnergyPeriod p = energyForRange(date, date, date.format(DateTimeFormatter.ofPattern("dd.MM.")));
+            if (hasUsableGridConsumption(p)) available.add(p);
+        }
+        if (available.isEmpty()) return;
+        Collections.reverse(available);
+        List<String> labels = new ArrayList<>();
+        double[] cheap = new double[available.size()];
+        double[] normal = new double[available.size()];
+        for (int i = 0; i < available.size(); i++) {
+            EnergyPeriod p = available.get(i);
+            labels.add(p.label);
+            cheap[i] = p.cheapKwh;
+            normal[i] = p.normalKwh;
+        }
+        List<SimpleEnergyChartView.Series> series = new ArrayList<>();
+        series.add(new SimpleEnergyChartView.Series("19 ct Nacht", cheap, UiKit.PURPLE));
+        series.add(new SimpleEnergyChartView.Series("29 ct Tag", normal, UiKit.BLUE));
+        addStatsChartCard("Netzbezug nach Tarif · letzte verfügbare Tage",
+                "Nur von Octopus gelieferte Verbrauchstage. Noch ausstehende Tage fehlen, statt mit 0 kWh zu erscheinen. Die Kosten sind Näherungen mit dem hinterlegten Tarif.",
+                new SimpleEnergyChartView(this, SimpleEnergyChartView.TYPE_STACKED_BAR,
+                        labels, series, "kWh"));
+    }
+
+    private void showOctopusHourlyTariffChart() {
+        if (octopus == null || octopus.intervals.isEmpty()) return;
+        List<LocalDate> dates = new ArrayList<>();
+        for (OctopusClient.Interval in : octopus.intervals) {
+            LocalDate date = octopusIntervalDate(in.readAt);
+            if (date != null && date.isBefore(LocalDate.now(BERLIN)) && !dates.contains(date))
+                dates.add(date);
+        }
+        dates.sort(Collections.reverseOrder());
+        LocalDate selected = null;
+        for (LocalDate date : dates) {
+            boolean[] seen = new boolean[24];
+            for (OctopusClient.Interval in : octopus.intervals) {
+                java.time.ZonedDateTime z = octopusIntervalDateTime(in.readAt);
+                if (z != null && z.toLocalDate().equals(date)) seen[z.getHour()] = true;
+            }
+            int hours = 0;
+            for (boolean b : seen) if (b) hours++;
+            // A DST transition day may have 23 unique local hour labels.
+            if (hours >= 23) { selected = date; break; }
+        }
+        if (selected == null) return;
+        double[] night = new double[24], normal = new double[24];
+        for (OctopusClient.Interval in : octopus.intervals) {
+            java.time.ZonedDateTime z = octopusIntervalDateTime(in.readAt);
+            if (z == null || !z.toLocalDate().equals(selected)) continue;
+            int hour = z.getHour();
+            if (in.cheap) night[hour] += in.kwh;
+            else normal[hour] += in.kwh;
+        }
+        List<String> labels = new ArrayList<>();
+        for (int hour = 0; hour < 24; hour++)
+            labels.add(String.format(Locale.GERMANY, "%02d", hour));
+        List<SimpleEnergyChartView.Series> series = new ArrayList<>();
+        series.add(new SimpleEnergyChartView.Series("19 ct Nacht", night, UiKit.PURPLE));
+        series.add(new SimpleEnergyChartView.Series("29 ct Tag", normal, UiKit.BLUE));
+        addStatsChartCard("Octopus-Stundenprofil · "
+                        + selected.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")),
+                "Der jüngste Tag mit mindestens 23 erfassten lokalen Stunden. Bei Zeitumstellungen können Stunden doppelt vorkommen oder fehlen. Messwerte sind historisch und nicht live.",
+                new SimpleEnergyChartView(this, SimpleEnergyChartView.TYPE_STACKED_BAR,
+                        labels, series, "kWh"));
+    }
+
     private void showSettings() {
         pageHeader("Einstellungen", "Verbindungen und Automatik zentral konfigurieren");
 
@@ -1779,6 +2052,32 @@ public final class MainActivity extends Activity {
         autoCard.addView(ev);
         content.addView(autoCard);
 
+        LinearLayout wattCard = settingsCard("WattWächter Plus",
+                "Live-Netzbezug über externen MQTT-Broker mit TLS · kein Raspberry erforderlich");
+        CheckBox wattEnabled = new CheckBox(this);
+        wattEnabled.setText("WattWächter MQTT aktivieren");
+        wattEnabled.setTextColor(UiKit.INK);
+        wattEnabled.setChecked(prefs.getBool("watt_mqtt_enabled", false));
+        wattCard.addView(wattEnabled);
+        EditText wattHost = addLabeledField(wattCard, "Broker-Hostname",
+                "Nur Hostname, ohne ssl:// oder Port (z. B. EMQX-Endpunkt)",
+                prefs.get("watt_mqtt_host", ""), false);
+        EditText wattPort = addLabeledField(wattCard, "TLS-Port",
+                "Standard 8883",
+                prefs.get("watt_mqtt_port", "8883"), false);
+        EditText wattTopic = addLabeledField(wattCard, "MQTT Topic-Prefix",
+                "Exakt den Prefix aus dem WattWächter übernehmen, ohne /#",
+                prefs.get("watt_mqtt_topic", ""), false);
+        EditText wattUser = addLabeledField(wattCard, "MQTT-Benutzername",
+                "MQTT-Zugang deines Brokers",
+                prefs.get("watt_mqtt_user", ""), false);
+        EditText wattPassword = addLabeledField(wattCard, "MQTT-Passwort",
+                "Im Android Keystore verschlüsselt gespeichert",
+                prefs.getSecret("watt_mqtt_password"), true);
+        wattCard.addView(UiKit.caption(this,
+                "Die Kurve enthält nur wirklich empfangene Werte. Fehlende Zeiten sind keine 0-kWh-Zeiten. Octopus bleibt die Quelle für die historischen Tarifstatistiken."));
+        content.addView(wattCard);
+
         Button save = UiKit.primaryButton(this, "Einstellungen speichern");
         save.setOnClickListener(v -> {
             prefs.put("pv_system", pvSystem.getText().toString());
@@ -1813,6 +2112,13 @@ public final class MainActivity extends Activity {
             prefs.put("cheap_price", cheapPrice.getText().toString());
             prefs.put("normal_price", normalPrice.getText().toString());
 
+            prefs.putBool("watt_mqtt_enabled", wattEnabled.isChecked());
+            prefs.put("watt_mqtt_host", wattHost.getText().toString());
+            prefs.put("watt_mqtt_port", wattPort.getText().toString());
+            prefs.put("watt_mqtt_topic", wattTopic.getText().toString());
+            prefs.put("watt_mqtt_user", wattUser.getText().toString());
+            prefs.putSecret("watt_mqtt_password", wattPassword.getText().toString());
+
             prefs.put("controller_url", controllerUrl.getText().toString());
             prefs.putSecret("controller_token", controllerToken.getText().toString());
             prefs.put("battery_kwh", battery.getText().toString());
@@ -1824,6 +2130,7 @@ public final class MainActivity extends Activity {
             prefs.putBool("ev_enabled", ev.isChecked());
 
             Toast.makeText(this, "Gespeichert", Toast.LENGTH_SHORT).show();
+            startWattMeter();
             pv = null;
             forecast = Collections.emptyList();
             octopus = null;
@@ -1837,7 +2144,7 @@ public final class MainActivity extends Activity {
         content.addView(save, buttonLp());
 
         TextView secure = UiKit.caption(this,
-                "API-Schlüssel, Refresh Tokens und Controller Token werden verschlüsselt im Android Keystore gespeichert und nie in GitHub geschrieben.");
+                "API-Schlüssel, MQTT-Passwort, Refresh Tokens und Controller Token werden verschlüsselt im Android Keystore gespeichert und nie in GitHub geschrieben.");
         secure.setPadding(dp(4), dp(4), dp(4), dp(12));
         content.addView(secure);
     }
