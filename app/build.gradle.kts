@@ -15,8 +15,14 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".mqttpreview"
+            versionNameSuffix = "-mqtt-preview"
+            resValue("string", "app_name", "PV Compact MQTT Preview")
+        }
         release {
             isMinifyEnabled = false
+            resValue("string", "app_name", "PV Compact")
         }
     }
 
