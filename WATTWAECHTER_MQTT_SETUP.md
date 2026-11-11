@@ -1,5 +1,11 @@
 # PV Compact 1.7.9 preview – WattWächter Plus MQTT
 
+**Safe installation:** The GitHub Actions debug APK uses the separate Android application
+ID `de.pvcompact.app.clean.mqttpreview` and label **PV Compact MQTT Preview**.
+It installs alongside the existing PV Compact app and has independent app settings.
+It cannot access or overwrite the original app's saved Octopus / PVOutput credentials.
+Configure credentials inside the preview only if you want to test those providers.
+
 This is an opt-in, read-only grid-meter integration. It does not change inverter control,
 Octopus authentication, PVOutput, or the official meter.
 
