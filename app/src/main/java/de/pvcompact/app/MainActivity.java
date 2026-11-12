@@ -77,7 +77,7 @@ public final class MainActivity extends Activity {
     private String wattError = "";
     private long lastWattUiAt = 0L;
     private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
-    private TextView wattYearText, wattTodayText;
+    private TextView wattYearText, wattTodayText, wattLocalStatusText;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
@@ -1958,6 +1958,7 @@ public final class MainActivity extends Activity {
         lastWattChartAt = now;
         if (wattYearText != null) wattYearText.setText(wattYearLabel());
         if (wattTodayText != null) wattTodayText.setText(wattTodayLabel());
+        if (wattLocalStatusText != null) wattLocalStatusText.setText("Historie: " + localHistoryStatus);
         if (!("Netz".equals(currentTab) || "Home".equals(currentTab))) return;
         try {
             if ("Netz".equals(currentTab) && wattHourChart != null) {
@@ -2022,9 +2023,10 @@ public final class MainActivity extends Activity {
         wattTodayText.setPadding(0, dp(7), 0, dp(7));
         wattTodayText.setLineSpacing(dp(2), 1.08f);
         card.addView(wattTodayText);
+        wattLocalStatusText = UiKit.caption(this, "Historie: " + localHistoryStatus);
+        card.addView(wattLocalStatusText);
         card.addView(UiKit.caption(this,
-                "Historie: " + localHistoryStatus
-                + ". PV-Wertpotenzial ist keine nachgewiesene Ersparnis; Batterieflüsse sind noch nicht erfasst."));
+                "PV-Wertpotenzial ist keine nachgewiesene Ersparnis; Batterieflüsse sind noch nicht erfasst."));
 
         if (homeGraph) {
             long now = System.currentTimeMillis();
