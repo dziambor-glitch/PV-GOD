@@ -26,6 +26,9 @@ on:
       - "app/**"
       - ".github/workflows/build-clean-v1.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -72,6 +75,22 @@ jobs:
           unzip -t "$APK" >/dev/null
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | head -20
           sha256sum "$APK"
+
+      - name: Publish direct APK download (GitHub Release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v1.8.1-wattwaechter-history"
+          ASSET="PVCompact-Historie-v1.8.1.apk"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "PV Compact Historie 1.8.1 (Android APK)" \
+              --notes "WattWächter-Tageshistorie, PV-Netz-Diagramm, Go-Tarifkosten und automatische MQTT-Verbindung. Eigenständige Android-Test-App, nicht im Play Store." \
+              --prerelease --latest=false
+          gh release upload "$TAG" "app/build/outputs/apk/debug/app-debug.apk#$ASSET" -R "$GITHUB_REPOSITORY" --clobber
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
