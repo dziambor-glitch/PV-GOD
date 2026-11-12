@@ -119,15 +119,19 @@ public final class WattMeterLocalHistory {
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
-            long ts = item.optLong("timestamp", 0);
-            long timeMs = ts > 946684800 ? ts * 1000L : 0;
+            // The history date is the device's local wall clock. Prefer it
+            // over a Unix timestamp to avoid a one-hour timezone shift.
+            long timeMs = 0L;
+            try {
+                LocalDateTime local = LocalDateTime.parse(item.getString("date"),
+                        DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"));
+                timeMs = local.atZone(BERLIN).toInstant().toEpochMilli();
+            } catch (Exception ignored) {}
             if (timeMs <= 0) {
-                try {
-                    LocalDateTime local = LocalDateTime.parse(item.getString("date"),
-                            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"));
-                    timeMs = local.atZone(BERLIN).toInstant().toEpochMilli();
-                } catch (Exception ignored) { continue; }
+                long ts = item.optLong("timestamp", 0);
+                if (ts > 946684800) timeMs = ts * 1000L;
             }
+            if (timeMs <= 0) continue;
             if (!desiredDate.equals(Instant.ofEpochMilli(timeMs).atZone(BERLIN)
                     .toLocalDate().toString())) continue;
             if (lastMs > 0 && timeMs < lastMs) continue;
