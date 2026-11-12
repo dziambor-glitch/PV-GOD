@@ -78,6 +78,8 @@ public final class MainActivity extends Activity {
     private long lastWattUiAt = 0L;
     private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
     private TextView wattYearText, wattTodayText, wattLocalStatusText;
+    private TextView wattTodayCheapText, wattTodayNormalText, wattTodayCostText, wattTodaySourceText;
+    private TextView wattAnnualImportText, wattAnnualPvText, wattMeterValueText;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
@@ -341,11 +343,10 @@ public final class MainActivity extends Activity {
                 UiKit.MINT),
                 metricLp(true));
 
-        String consumption = pv != null && pv.live.consumptionW != null
-                ? String.format(Locale.GERMANY, "%.0f W", pv.live.consumptionW)
-                : "—";
-        row1.addView(metric("VERBRAUCH", consumption, "Haus aktuell", UiKit.BLUE, UiKit.BLUE_SOFT),
-                metricLp(false));
+        row1.addView(metric("STROMPREIS",
+                String.format(Locale.GERMANY, "%.0f ct/kWh", currentTariffPrice()),
+                isCheapNow() ? "Nachtstrom · günstig" : "Tagstrom · normal",
+                UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(false));
         content.addView(row1);
 
         LinearLayout row2 = UiKit.row(this);
@@ -353,16 +354,19 @@ public final class MainActivity extends Activity {
         String tomorrow = forecast.size() > 1
                 ? String.format(Locale.GERMANY, "%.1f kWh", adjustedForecastKwh(forecast.get(1)))
                 : "—";
+        Double houseTotal = pvHouseTodayKwh();
         row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
-                metricLp(true));
+                houseTotal == null
+                        ? new LinearLayout.LayoutParams(-1, -2)
+                        : metricLp(true));
 
-        double price = currentTariffPrice();
-        row2.addView(metric("STROMPREIS",
-                        String.format(Locale.GERMANY, "%.0f ct", price),
-                        isCheapNow() ? "Go günstig aktiv" : "Go Normaltarif",
-                        UiKit.PURPLE,
-                        UiKit.PURPLE_SOFT),
-                metricLp(false));
+        if (houseTotal != null) {
+            row2.addView(metric("HAUS HEUTE",
+                            String.format(Locale.GERMANY, "%.1f kWh", houseTotal),
+                            "echter Hausverbrauch · PVOutput",
+                            UiKit.GREEN, UiKit.MINT),
+                    metricLp(false));
+        }
         content.addView(row2);
 
         LocalDate yesterdayDate = LocalDate.now(BERLIN).minusDays(1);
@@ -1733,64 +1737,52 @@ public final class MainActivity extends Activity {
         return isWattExporting() ? UiKit.GREEN_DARK : UiKit.RED;
     }
 
-    private String wattRegisterLabel() {
+    private Double currentRegisterKwh() {
         WattMeterMqttClient.Snapshot s = wattSnapshot;
-        if (s == null || s.importKwh == null) return "Aktueller Zählerstand: —";
-        return String.format(Locale.GERMANY, "Aktueller Zählerstand: %,.3f kWh", s.importKwh);
+        if (s != null && s.importKwh != null && Double.isFinite(s.importKwh))
+            return s.importKwh;
+        WattMeterLocalHistory.Day d = localToday;
+        if (d != null && LocalDate.now(BERLIN).toString().equals(d.date)
+                && d.currentMeterKwh != null && Double.isFinite(d.currentMeterKwh))
+            return d.currentMeterKwh;
+        return null;
+    }
+
+    private String wattRegisterLabel() {
+        Double value = currentRegisterKwh();
+        if (value == null) return "—";
+        return String.format(Locale.GERMANY, "%,.3f kWh", value);
+    }
+
+    private String annualImportLabel() {
+        Double meter = currentRegisterKwh();
+        if (meter == null) return "—";
+        int year = LocalDate.now(BERLIN).getYear();
+        if (year == 2026) {
+            // Smart meter commissioned with zero baseline in March 2026.
+            return String.format(Locale.GERMANY, "%,.1f kWh", meter);
+        }
+        WattMeterHistoryStore.YearAnchor anchor = null;
+        try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
+        if (anchor == null || meter < anchor.importKwh) return "—";
+        return String.format(Locale.GERMANY, "%,.1f kWh", meter - anchor.importKwh);
+    }
+
+    private String annualPvLabel() {
+        int year = LocalDate.now(BERLIN).getYear();
+        return hasPvYear(year)
+                ? String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(year)) : "—";
     }
 
     private String wattYearLabel() {
         int year = LocalDate.now(BERLIN).getYear();
-        WattMeterMqttClient.Snapshot s = wattSnapshot;
-        String net = "—";
-        String rangeNote = "Basiswert fehlt";
-        if (s != null && s.importKwh != null) {
-            if (year == 2026) {
-                // The E320 was commissioned with a new meter in March 2026.
-                net = String.format(Locale.GERMANY, "%,.2f kWh", s.importKwh);
-                rangeNote = "seit Zählereinbau März 2026";
-            } else {
-                WattMeterHistoryStore.YearAnchor anchor = null;
-                try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
-                if (anchor != null && s.importKwh >= anchor.importKwh) {
-                    net = String.format(Locale.GERMANY, "%,.2f kWh",
-                            s.importKwh - anchor.importKwh);
-                    rangeNote = "seit " + new java.text.SimpleDateFormat("dd.MM. HH:mm", Locale.GERMANY)
-                            .format(new java.util.Date(anchor.firstObservedMs))
-                            + " Uhr (erster erfasster Stand)";
-                }
-            }
-        }
-
-        String pvAnnual = hasPvYear(year)
-                ? String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(year)) : "—";
-        StringBuilder result = new StringBuilder();
-        result.append("Netzbezug ").append(year).append(": ").append(net)
-                .append("\n").append(rangeNote)
-                .append("\nPV-Erzeugung ").append(year).append(": ").append(pvAnnual);
-
-        if (year > 2026) {
-            int prev = year - 1;
-            WattMeterHistoryStore.YearAnchor newAnchor = null;
-            WattMeterHistoryStore.YearAnchor prevAnchor = null;
-            try {
-                newAnchor = wattHistory.yearAnchor(year);
-                prevAnchor = wattHistory.yearAnchor(prev);
-            } catch (Exception ignored) {}
-            Double previousImport = null;
-            if (newAnchor != null) {
-                if (prev == 2026) previousImport = newAnchor.importKwh;
-                else if (prevAnchor != null && newAnchor.importKwh >= prevAnchor.importKwh)
-                    previousImport = newAnchor.importKwh - prevAnchor.importKwh;
-            }
-            if (previousImport != null) result.append("\nNetzbezug ").append(prev)
-                    .append(": ")
-                    .append(String.format(Locale.GERMANY, "%,.2f kWh", previousImport))
-                    .append(" (bis erstem Stand ").append(year).append(")");
-            if (hasPvYear(prev)) result.append("\nPV-Erzeugung ").append(prev).append(": ")
-                    .append(String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(prev)));
-        }
-        return result.toString();
+        if (year == 2026) return "Netzbezug seit Einbau des neuen Zählers im März 2026";
+        WattMeterHistoryStore.YearAnchor anchor = null;
+        try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
+        if (anchor == null) return "Jahresbeginn noch nicht erfasst; kein geschätzter Nullwert";
+        return "Seit erster Ablesung am " +
+                new java.text.SimpleDateFormat("dd.MM. HH:mm", Locale.GERMANY)
+                    .format(new java.util.Date(anchor.firstObservedMs)) + " Uhr";
     }
 
     private Double pvTodayKwh() {
@@ -1833,76 +1825,80 @@ public final class MainActivity extends Activity {
         return null;
     }
 
-    private String wattTodayLabel() {
-        long now = System.currentTimeMillis();
-        long midnight = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
-        WattMeterHistoryStore.DayEstimate e = null;
-        try {
-            e = wattHistory.estimateDay(midnight, now,
-                    currentCheapStart(), currentCheapEnd());
-        } catch (Exception ignored) {}
-        StringBuilder result = new StringBuilder();
+    private static final class TodayTariffs {
+        boolean available, splitAvailable, fromMeterHistory;
+        double totalKwh, cheapKwh, normalKwh, estimatedCostEuro;
+        String status;
+    }
+
+    private TodayTariffs todayTariffs() {
+        TodayTariffs t = new TodayTariffs();
         WattMeterLocalHistory.Day saved = localToday;
+        double cheapRate = parseDouble(prefs.get("cheap_price", "19"), 19);
+        double normalRate = parseDouble(prefs.get("normal_price", "29"), 29);
+        if (octopus != null && Double.isFinite(octopus.cheapCents)) cheapRate = octopus.cheapCents;
+        if (octopus != null && Double.isFinite(octopus.normalCents)) normalRate = octopus.normalCents;
+
         if (saved != null && LocalDate.now(BERLIN).toString().equals(saved.date)) {
-            String asOf = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
+            t.available = true;
+            t.fromMeterHistory = true;
+            t.totalKwh = saved.importKwh;
+            t.cheapKwh = saved.cheapKwh;
+            t.normalKwh = saved.normalKwh;
+            t.splitAvailable = saved.tariffSplitAvailable || saved.importKwh == 0;
+            String stamp = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
                     .format(new java.util.Date(saved.fetchedAtMs));
-            double cheapRate = parseDouble(prefs.get("cheap_price", "19"), 19);
-            double normalRate = parseDouble(prefs.get("normal_price", "29"), 29);
-            if (octopus != null && Double.isFinite(octopus.cheapCents)) cheapRate = octopus.cheapCents;
-            if (octopus != null && Double.isFinite(octopus.normalCents)) normalRate = octopus.normalCents;
-            result.append(String.format(Locale.GERMANY,
-                    "Netzbezug heute: %.2f kWh\n", saved.importKwh));
-            if (saved.cheapKwh + saved.normalKwh > 0 || saved.importKwh == 0) {
-                result.append(String.format(Locale.GERMANY,
-                        "Stromkosten (geschätzt): %.2f €\n",
-                        saved.estimatedEuro(cheapRate, normalRate)));
-                result.append(String.format(Locale.GERMANY,
-                        "Davon Nacht: ca. %.2f kWh · Tag: ca. %.2f kWh\n",
-                        saved.cheapKwh, saved.normalKwh));
+            t.status = "WattWächter · 15-Min-Verlauf · Stand " + stamp + " Uhr";
+        } else {
+            long midnight = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+            WattMeterHistoryStore.DayEstimate e = null;
+            try {
+                e = wattHistory.estimateDay(midnight, System.currentTimeMillis(),
+                        currentCheapStart(), currentCheapEnd());
+            } catch (Exception ignored) {}
+            if (e != null && e.intervals > 0) {
+                t.available = true;
+                t.totalKwh = e.totalKwh();
+                t.cheapKwh = e.cheapKwh;
+                t.normalKwh = e.normalKwh;
+                t.splitAvailable = true;
+                String stamp = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
+                        .format(new java.util.Date(e.firstMs));
+                t.status = "Nur Teilmessung seit " + stamp + " Uhr · kompletter Tageswert noch ausstehend";
             } else {
-                result.append("Kosten: noch keine Tarifaufteilung verfügbar\n");
+                t.status = "Tageshistorie wird geladen · keine künstlichen Nullwerte";
             }
-            result.append("Quelle: WattWächter Tageshistorie · Stand ").append(asOf)
-                    .append(" Uhr · 15-Minuten-Auflösung");
-        } else if (e != null && e.intervals > 0) {
-            String since = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
-                    .format(new java.util.Date(e.firstMs));
-            double cheapRate = parseDouble(prefs.get("cheap_price", "19"), 19);
-            double normalRate = parseDouble(prefs.get("normal_price", "29"), 29);
-            if (octopus != null && Double.isFinite(octopus.cheapCents)) cheapRate = octopus.cheapCents;
-            if (octopus != null && Double.isFinite(octopus.normalCents)) normalRate = octopus.normalCents;
-            double cost = (e.cheapKwh * cheapRate + e.normalKwh * normalRate) / 100.0;
-            result.append(String.format(Locale.GERMANY,
-                    "Netzbezug heute (erfasst): %.2f kWh\n", e.totalKwh()));
-            result.append(String.format(Locale.GERMANY,
-                    "Stromkosten (geschätzt): %.2f €\n", cost));
-            result.append(String.format(Locale.GERMANY,
-                    "Davon Nacht: %.2f kWh · Tag: %.2f kWh\n", e.cheapKwh, e.normalKwh));
-            result.append(String.format(Locale.GERMANY,
-                    "Abgedeckt: %.1f Stunden seit %s · keine Hochrechnung",
-                    e.coveredHours, since));
-        } else {
-            result.append("Netzbezug heute: noch keine ausreichenden Zählerstände");
         }
-
-        Double pvKwh = pvTodayKwh();
-        if (pvKwh != null) {
-            result.append(String.format(Locale.GERMANY,
-                    "\nPV-Erzeugung heute: %.2f kWh", pvKwh));
-            double price = parseDouble(prefs.get("normal_price", "29"), 29);
-            result.append(String.format(Locale.GERMANY,
-                    "\nPV-Wertpotenzial: ca. %.2f € (bei %.0f ct/kWh)",
-                    pvKwh * price / 100.0, price));
-        } else result.append("\nPV-Erzeugung heute: nicht verfügbar");
-
-        Double house = pvHouseTodayKwh();
-        if (house != null) {
-            result.append(String.format(Locale.GERMANY,
-                    "\nHausverbrauch heute laut PVOutput: %.2f kWh", house));
-        } else {
-            result.append("\nHausverbrauch heute: noch nicht gemessen");
+        if (t.splitAvailable) {
+            t.estimatedCostEuro = (t.cheapKwh * cheapRate
+                    + t.normalKwh * normalRate) / 100.0;
         }
-        return result.toString();
+        return t;
+    }
+
+    private String wattTodayLabel() {
+        TodayTariffs t = todayTariffs();
+        return t.available
+                ? String.format(Locale.GERMANY, "%.2f kWh", t.totalKwh)
+                : "—";
+    }
+
+    private String wattCheapLabel() {
+        TodayTariffs t = todayTariffs();
+        return t.splitAvailable
+                ? String.format(Locale.GERMANY, "%.2f kWh", t.cheapKwh) : "—";
+    }
+
+    private String wattNormalLabel() {
+        TodayTariffs t = todayTariffs();
+        return t.splitAvailable
+                ? String.format(Locale.GERMANY, "%.2f kWh", t.normalKwh) : "—";
+    }
+
+    private String wattCostLabel() {
+        TodayTariffs t = todayTariffs();
+        return t.splitAvailable
+                ? String.format(Locale.GERMANY, "%.2f €", t.estimatedCostEuro) : "—";
     }
 
     private String wattStateLabel() {
@@ -1957,8 +1953,15 @@ public final class MainActivity extends Activity {
         if (now - lastWattChartAt < 5000L) return;
         lastWattChartAt = now;
         if (wattYearText != null) wattYearText.setText(wattYearLabel());
+        if (wattAnnualImportText != null) wattAnnualImportText.setText(annualImportLabel());
+        if (wattAnnualPvText != null) wattAnnualPvText.setText(annualPvLabel());
+        if (wattMeterValueText != null) wattMeterValueText.setText(wattRegisterLabel());
         if (wattTodayText != null) wattTodayText.setText(wattTodayLabel());
-        if (wattLocalStatusText != null) wattLocalStatusText.setText("Historie: " + localHistoryStatus);
+        if (wattTodayCheapText != null) wattTodayCheapText.setText(wattCheapLabel());
+        if (wattTodayNormalText != null) wattTodayNormalText.setText(wattNormalLabel());
+        if (wattTodayCostText != null) wattTodayCostText.setText(wattCostLabel());
+        if (wattTodaySourceText != null) wattTodaySourceText.setText(todayTariffs().status);
+        if (wattLocalStatusText != null) wattLocalStatusText.setText("Synchronisierung: " + localHistoryStatus);
         if (!("Netz".equals(currentTab) || "Home".equals(currentTab))) return;
         try {
             if ("Netz".equals(currentTab) && wattHourChart != null) {
@@ -2011,22 +2014,108 @@ public final class MainActivity extends Activity {
         lp.setMargins(0, dp(11), 0, dp(11));
         card.addView(line, lp);
 
-        wattRegistersText = UiKit.text(this, wattRegisterLabel(), 14, UiKit.INK);
-        card.addView(wattRegistersText);
-        wattYearText = UiKit.text(this, wattYearLabel(), 13, UiKit.MUTED);
-        wattYearText.setPadding(0, dp(8), 0, dp(8));
-        wattYearText.setLineSpacing(dp(2), 1.05f);
-        card.addView(wattYearText);
+        card.addView(UiKit.overline(this, "AKTUELLER ZÄHLERSTAND", UiKit.MUTED));
+        wattMeterValueText = UiKit.text(this, wattRegisterLabel(), 23, UiKit.INK);
+        wattMeterValueText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattMeterValueText.setPadding(0, dp(5), 0, dp(13));
+        card.addView(wattMeterValueText);
 
-        card.addView(UiKit.overline(this, "HEUTE · VORLÄUFIG", UiKit.BLUE));
-        wattTodayText = UiKit.text(this, wattTodayLabel(), 13, UiKit.INK);
-        wattTodayText.setPadding(0, dp(7), 0, dp(7));
-        wattTodayText.setLineSpacing(dp(2), 1.08f);
+        int year = LocalDate.now(BERLIN).getYear();
+        LinearLayout annualRow = UiKit.row(this);
+        annualRow.setBaselineAligned(false);
+        LinearLayout gridBox = new LinearLayout(this);
+        gridBox.setOrientation(LinearLayout.VERTICAL);
+        gridBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        gridBox.setBackground(UiKit.roundRect(this, UiKit.RED_SOFT, 14));
+        gridBox.addView(UiKit.overline(this, "JAHRESVERBRAUCH " + year, UiKit.RED));
+        wattAnnualImportText = UiKit.text(this, annualImportLabel(), 19, UiKit.RED);
+        wattAnnualImportText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattAnnualImportText.setPadding(0, dp(6), 0, 0);
+        gridBox.addView(wattAnnualImportText);
+        annualRow.addView(gridBox, metricLp(true));
+
+        LinearLayout pvBox = new LinearLayout(this);
+        pvBox.setOrientation(LinearLayout.VERTICAL);
+        pvBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        pvBox.setBackground(UiKit.roundRect(this, UiKit.MINT, 14));
+        pvBox.addView(UiKit.overline(this, "PV-ERZEUGUNG " + year, UiKit.GREEN_DARK));
+        wattAnnualPvText = UiKit.text(this, annualPvLabel(), 19, UiKit.GREEN_DARK);
+        wattAnnualPvText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattAnnualPvText.setPadding(0, dp(6), 0, 0);
+        pvBox.addView(wattAnnualPvText);
+        annualRow.addView(pvBox, metricLp(false));
+        card.addView(annualRow);
+
+        wattYearText = UiKit.caption(this, wattYearLabel());
+        wattYearText.setPadding(dp(3), 0, 0, dp(9));
+        card.addView(wattYearText);
+        View dayLine = UiKit.divider(this);
+        LinearLayout.LayoutParams dpLine = new LinearLayout.LayoutParams(-1, dp(1));
+        dpLine.setMargins(0, dp(7), 0, dp(12));
+        card.addView(dayLine, dpLine);
+
+        card.addView(UiKit.overline(this, "NETZBEZUG HEUTE", UiKit.RED));
+        wattTodayText = UiKit.text(this, wattTodayLabel(), 29, UiKit.INK);
+        wattTodayText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayText.setPadding(0, dp(5), 0, dp(10));
         card.addView(wattTodayText);
-        wattLocalStatusText = UiKit.caption(this, "Historie: " + localHistoryStatus);
+
+        LinearLayout tariffRow = UiKit.row(this);
+        tariffRow.setBaselineAligned(false);
+        LinearLayout cheapBox = new LinearLayout(this);
+        cheapBox.setOrientation(LinearLayout.VERTICAL);
+        cheapBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        cheapBox.setBackground(UiKit.roundRect(this, UiKit.PURPLE_SOFT, 14));
+        cheapBox.addView(UiKit.overline(this, "NACHTSTROM · 00–05 UHR", UiKit.PURPLE));
+        wattTodayCheapText = UiKit.text(this, wattCheapLabel(), 19, UiKit.PURPLE);
+        wattTodayCheapText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayCheapText.setPadding(0, dp(6), 0, dp(3));
+        cheapBox.addView(wattTodayCheapText);
+        cheapBox.addView(UiKit.caption(this, String.format(Locale.GERMANY,
+                "%.0f ct/kWh", parseDouble(prefs.get("cheap_price", "19"), 19))));
+        tariffRow.addView(cheapBox, metricLp(true));
+
+        LinearLayout normalBox = new LinearLayout(this);
+        normalBox.setOrientation(LinearLayout.VERTICAL);
+        normalBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        normalBox.setBackground(UiKit.roundRect(this, UiKit.AMBER_SOFT, 14));
+        normalBox.addView(UiKit.overline(this, "TAGSTROM · AB 05 UHR", UiKit.AMBER));
+        wattTodayNormalText = UiKit.text(this, wattNormalLabel(), 19, UiKit.AMBER);
+        wattTodayNormalText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayNormalText.setPadding(0, dp(6), 0, dp(3));
+        normalBox.addView(wattTodayNormalText);
+        normalBox.addView(UiKit.caption(this, String.format(Locale.GERMANY,
+                "%.0f ct/kWh", parseDouble(prefs.get("normal_price", "29"), 29))));
+        tariffRow.addView(normalBox, metricLp(false));
+        card.addView(tariffRow);
+
+        LinearLayout costRow = UiKit.row(this);
+        TextView costLabel = UiKit.text(this, "Stromkosten heute (geschätzt)", 14, UiKit.MUTED);
+        costRow.addView(costLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        wattTodayCostText = UiKit.text(this, wattCostLabel(), 23, UiKit.INK);
+        wattTodayCostText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        costRow.addView(wattTodayCostText);
+        card.addView(costRow);
+
+        wattTodaySourceText = UiKit.caption(this, todayTariffs().status);
+        wattTodaySourceText.setPadding(0, dp(8), 0, dp(5));
+        card.addView(wattTodaySourceText);
+        wattLocalStatusText = UiKit.caption(this, "Synchronisierung: " + localHistoryStatus);
         card.addView(wattLocalStatusText);
-        card.addView(UiKit.caption(this,
-                "PV-Wertpotenzial ist keine nachgewiesene Ersparnis; Batterieflüsse sind noch nicht erfasst."));
+
+        Double pvDay = pvTodayKwh();
+        if (pvDay != null) {
+            TextView pvToday = UiKit.text(this,
+                    String.format(Locale.GERMANY, "PV-Ertrag heute: %.2f kWh", pvDay),
+                    14, UiKit.GREEN_DARK);
+            pvToday.setPadding(0, dp(10), 0, 0);
+            card.addView(pvToday);
+            double normalCent = parseDouble(prefs.get("normal_price", "29"), 29);
+            card.addView(UiKit.caption(this,
+                    String.format(Locale.GERMANY,
+                        "Theoretisches PV-Wertpotenzial: %.2f € bei %.0f ct/kWh – keine tatsächliche Eigenverbrauchsersparnis",
+                        pvDay * normalCent / 100.0, normalCent)));
+        }
 
         if (homeGraph) {
             long now = System.currentTimeMillis();

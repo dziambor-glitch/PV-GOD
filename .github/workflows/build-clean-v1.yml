@@ -9,6 +9,7 @@ on:
       - feature/wattwaechter-mqtt-cloud-v179
       - feature/wattwaechter-home-v180
       - feature/wattwaechter-history-v181
+      - feature/wattwaechter-home-layout-v182
       - stats-meter-reading-v177
       - octopus-day-validation-v176
       - octopus-day-breakdown-v175
@@ -82,12 +83,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v1.8.1-wattwaechter-history"
-          ASSET="PVCompact-Historie-v1.8.1.apk"
+          TAG="v1.8.2-wattwaechter-dashboard"
+          ASSET="PVCompact-Dashboard-v1.8.2.apk"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "PV Compact Historie 1.8.1 (Android APK)" \
+              --title "PV Compact Dashboard 1.8.2 (Android APK)" \
               --notes "WattWächter-Tageshistorie, PV-Netz-Diagramm, Go-Tarifkosten und automatische MQTT-Verbindung. Eigenständige Android-Test-App, nicht im Play Store." \
               --prerelease --latest=false
           gh release upload "$TAG" "app/build/outputs/apk/debug/app-debug.apk#$ASSET" -R "$GITHUB_REPOSITORY" --clobber
@@ -95,6 +96,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-v1.8.1-history
+          name: PVCompact-v1.8.2-dashboard
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

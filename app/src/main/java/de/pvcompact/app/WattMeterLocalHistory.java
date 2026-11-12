@@ -35,17 +35,22 @@ public final class WattMeterLocalHistory {
         public final double exportKwh;
         public final double cheapKwh;
         public final double normalKwh;
+        public final Double currentMeterKwh;
+        public final boolean tariffSplitAvailable;
         public final long fetchedAtMs;
         public final long lastIntervalMs;
         public final List<WattMeterHistoryStore.Point> curve;
 
         Day(String date, double imported, double exported, double cheap, double normal,
+            Double meterKwh, boolean hasTariffSplit,
             long fetchedAt, long lastInterval, List<WattMeterHistoryStore.Point> points) {
             this.date = date;
             this.importKwh = imported;
             this.exportKwh = exported;
             this.cheapKwh = cheap;
             this.normalKwh = normal;
+            this.currentMeterKwh = meterKwh;
+            this.tariffSplitAvailable = hasTariffSplit;
             this.fetchedAtMs = fetchedAt;
             this.lastIntervalMs = lastInterval;
             this.curve = points;
@@ -115,6 +120,7 @@ public final class WattMeterLocalHistory {
 
         List<WattMeterHistoryStore.Point> curve = new ArrayList<>();
         double nightWeight = 0, dayWeight = 0;
+        Double lastRegister = null;
         long lastMs = 0;
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
@@ -136,6 +142,9 @@ public final class WattMeterLocalHistory {
                     .toLocalDate().toString())) continue;
             if (lastMs > 0 && timeMs < lastMs) continue;
             lastMs = Math.max(lastMs, timeMs);
+            double meterReg = item.optDouble("import_total_kWh", Double.NaN);
+            if (Double.isFinite(meterReg) && meterReg >= 0)
+                lastRegister = meterReg;
 
             double averageImportKw = item.optDouble("import_kW", Double.NaN);
             if (Double.isFinite(averageImportKw) && averageImportKw >= 0) {
@@ -164,7 +173,8 @@ public final class WattMeterLocalHistory {
             normal = summaryImport - cheap;
         }
         return new Day(desiredDate, summaryImport, summaryExport,
-                cheap, normal, fetchedAt, lastMs, curve);
+                cheap, normal, lastRegister, sumWeights > 0,
+                fetchedAt, lastMs, curve);
     }
 
     private static boolean isCheap(java.time.LocalTime time, String from, String to) {
