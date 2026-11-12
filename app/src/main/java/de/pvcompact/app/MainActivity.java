@@ -165,7 +165,7 @@ public final class MainActivity extends Activity {
         // Local REST history is independent of the optional MQTT connection.
         long now = System.currentTimeMillis();
         if (localSyncRunning || now - lastLocalSyncAttemptMs < 5 * 60_000L) return;
-        String host = prefs.get("watt_local_host", "wattwaechter-acebe6036778.local").trim();
+        String host = prefs.get("watt_local_host", "192.168.178.26").trim();
         if (host.isEmpty()) {
             localHistoryStatus = "Keine lokale WattWächter-Adresse eingetragen";
             updateWattMeterTexts();
@@ -2960,7 +2960,7 @@ public final class MainActivity extends Activity {
                 prefs.getSecret("watt_mqtt_password"), true);
         EditText wattLocalHost = addLabeledField(wattCard, "WattWächter im Heimnetz · IP oder .local",
                 "Für die gespeicherte Tageshistorie; bei Problemen die lokale IP aus deiner Plume-App eintragen",
-                prefs.get("watt_local_host", "wattwaechter-acebe6036778.local"), false);
+                prefs.get("watt_local_host", "192.168.178.26"), false);
         EditText wattLocalToken = addLabeledField(wattCard, "Lokaler READ-Token (optional)",
                 "Nur wenn API-Schutz am WattWächter aktiviert ist. Kein Cloud- oder MQTT-Passwort.",
                 prefs.getSecret("watt_local_token"), true);
