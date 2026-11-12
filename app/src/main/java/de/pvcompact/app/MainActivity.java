@@ -145,6 +145,7 @@ public final class MainActivity extends Activity {
                 localToday = day;
                 localHistoryStatus = "Lokale Zählerhistorie synchronisiert";
                 runOnUiThread(() -> {
+                    lastWattChartAt = 0L; // Refresh freshly loaded daily totals immediately.
                     updateWattMeterTexts();
                     if (wattHomeChart != null) wattHomeChart.setHistoricalNetData(day.curve);
                     if (wattHourChart != null) wattHourChart.setHistoricalNetData(day.curve);
@@ -322,7 +323,7 @@ public final class MainActivity extends Activity {
         // 1. LIVE WattWächter with exactly ONE current grid direction.
         LinearLayout live = UiKit.card(this);
         LinearLayout title = UiKit.row(this);
-        TextView logo = UiKit.text(this, "♧", 31, UiKit.GREEN_DARK);
+        TextView logo = UiKit.text(this, "⚡", 30, UiKit.GREEN_DARK);
         logo.setGravity(Gravity.CENTER);
         logo.setBackground(UiKit.roundRect(this, UiKit.MINT, 13));
         title.addView(logo, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -392,6 +393,13 @@ public final class MainActivity extends Activity {
         wattTodaySourceText = UiKit.caption(this, todayTariffs().status);
         wattTodaySourceText.setPadding(0, dp(9), 0, 0);
         live.addView(wattTodaySourceText);
+        Double measuredHouseDay = pvHouseTodayKwh();
+        if (measuredHouseDay != null) {
+            TextView house = UiKit.caption(this, String.format(Locale.GERMANY,
+                    "Hausverbrauch heute laut PVOutput: %.2f kWh", measuredHouseDay));
+            house.setPadding(0, dp(4), 0, 0);
+            live.addView(house);
+        }
         content.addView(live);
 
         // 2. Clear active/inactive dual tariff cards. Active state represents NOW
