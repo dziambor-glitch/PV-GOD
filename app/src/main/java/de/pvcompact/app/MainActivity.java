@@ -47,6 +47,7 @@ public final class MainActivity extends Activity {
     private volatile String localHistoryStatus = "Lokale Historie noch nicht abgerufen";
     private long lastLocalSyncAttemptMs;
     private volatile boolean localSyncRunning;
+    private volatile boolean retryLocalHistoryPending;
     private boolean inForeground;
     private final Runnable foregroundUpdates = new Runnable() {
         @Override public void run() {
@@ -164,13 +165,21 @@ public final class MainActivity extends Activity {
                 runOnUiThread(this::updateWattMeterTexts);
             } finally {
                 localSyncRunning = false;
+                // If settings changed while a request was running, query the
+                // newly saved address immediately rather than losing the retry.
+                if (retryLocalHistoryPending) {
+                    retryLocalHistoryPending = false;
+                    runOnUiThread(this::refreshLocalHistoryNow);
+                }
             }
         });
     }
 
     private void refreshLocalHistoryNow() {
         if (localSyncRunning) {
-            Toast.makeText(this, "Tageshistorie wird bereits abgerufen", Toast.LENGTH_SHORT).show();
+            retryLocalHistoryPending = true;
+            localHistoryStatus = "Abruf läuft – erneuter Versuch folgt";
+            updateWattMeterTexts();
             return;
         }
         lastLocalSyncAttemptMs = 0L;
