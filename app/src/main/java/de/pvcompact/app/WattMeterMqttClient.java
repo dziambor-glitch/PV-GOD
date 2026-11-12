@@ -47,6 +47,7 @@ public final class WattMeterMqttClient {
     }
 
     private final Listener listener;
+    private final java.util.function.Consumer<String> historyConsumer;
     private final String topicPrefix;
     private MqttAsyncClient mqtt;
     private String state = "Verbindung wird aufgebaut";
@@ -58,6 +59,13 @@ public final class WattMeterMqttClient {
     public WattMeterMqttClient(String host, int port, String username,
                                String password, String topicPrefix, Listener listener)
             throws Exception {
+        this(host, port, username, password, topicPrefix, listener, null);
+    }
+
+    public WattMeterMqttClient(String host, int port, String username,
+                               String password, String topicPrefix, Listener listener,
+                               java.util.function.Consumer<String> historyConsumer)
+            throws Exception {
         if (host == null || !host.matches("[A-Za-z0-9.-]+") || host.isEmpty()) {
             throw new IllegalArgumentException("Bitte einen gültigen Broker-Hostnamen ohne Protokoll eingeben.");
         }
@@ -68,6 +76,7 @@ public final class WattMeterMqttClient {
             throw new IllegalArgumentException("Ungültiger MQTT-Topic-Prefix.");
         }
         this.listener = listener;
+        this.historyConsumer = historyConsumer;
         this.topicPrefix = topicPrefix;
         // Always use verified TLS; never silently downgrade credentials to plain MQTT.
         mqtt = new MqttAsyncClient("ssl://" + host + ":" + port,
@@ -106,6 +115,14 @@ public final class WattMeterMqttClient {
             @Override public void messageArrived(String topic, MqttMessage message) {
                 if (closed || !topic.startsWith(WattMeterMqttClient.this.topicPrefix + "/")) return;
                 String code = topic.substring(WattMeterMqttClient.this.topicPrefix.length() + 1);
+                if (code.equals("pvcompact/history/today")) {
+                    // Dedicated retained cloud-history message. The consumer
+                    // offloads validation/persistence away from Paho's callback thread.
+                    if (historyConsumer != null && message.getPayload().length <= 96_000) {
+                        historyConsumer.accept(new String(message.getPayload(), StandardCharsets.UTF_8));
+                    }
+                    return;
+                }
                 if (!code.equals("16.7.0") && !code.equals("1.8.0") && !code.equals("2.8.0")) return;
 
                 try {
