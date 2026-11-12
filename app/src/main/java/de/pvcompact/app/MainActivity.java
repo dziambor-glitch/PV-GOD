@@ -2012,22 +2012,108 @@ public final class MainActivity extends Activity {
         lp.setMargins(0, dp(11), 0, dp(11));
         card.addView(line, lp);
 
-        wattRegistersText = UiKit.text(this, wattRegisterLabel(), 14, UiKit.INK);
-        card.addView(wattRegistersText);
-        wattYearText = UiKit.text(this, wattYearLabel(), 13, UiKit.MUTED);
-        wattYearText.setPadding(0, dp(8), 0, dp(8));
-        wattYearText.setLineSpacing(dp(2), 1.05f);
-        card.addView(wattYearText);
+        card.addView(UiKit.overline(this, "AKTUELLER ZÄHLERSTAND", UiKit.MUTED));
+        wattMeterValueText = UiKit.text(this, wattRegisterLabel(), 23, UiKit.INK);
+        wattMeterValueText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattMeterValueText.setPadding(0, dp(5), 0, dp(13));
+        card.addView(wattMeterValueText);
 
-        card.addView(UiKit.overline(this, "HEUTE · VORLÄUFIG", UiKit.BLUE));
-        wattTodayText = UiKit.text(this, wattTodayLabel(), 13, UiKit.INK);
-        wattTodayText.setPadding(0, dp(7), 0, dp(7));
-        wattTodayText.setLineSpacing(dp(2), 1.08f);
+        int year = LocalDate.now(BERLIN).getYear();
+        LinearLayout annualRow = UiKit.row(this);
+        annualRow.setBaselineAligned(false);
+        LinearLayout gridBox = new LinearLayout(this);
+        gridBox.setOrientation(LinearLayout.VERTICAL);
+        gridBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        gridBox.setBackground(UiKit.roundRect(this, UiKit.RED_SOFT, 14));
+        gridBox.addView(UiKit.overline(this, "JAHRESVERBRAUCH " + year, UiKit.RED));
+        wattAnnualImportText = UiKit.text(this, annualImportLabel(), 19, UiKit.RED);
+        wattAnnualImportText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattAnnualImportText.setPadding(0, dp(6), 0, 0);
+        gridBox.addView(wattAnnualImportText);
+        annualRow.addView(gridBox, metricLp(true));
+
+        LinearLayout pvBox = new LinearLayout(this);
+        pvBox.setOrientation(LinearLayout.VERTICAL);
+        pvBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        pvBox.setBackground(UiKit.roundRect(this, UiKit.MINT, 14));
+        pvBox.addView(UiKit.overline(this, "PV-ERZEUGUNG " + year, UiKit.GREEN_DARK));
+        wattAnnualPvText = UiKit.text(this, annualPvLabel(), 19, UiKit.GREEN_DARK);
+        wattAnnualPvText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattAnnualPvText.setPadding(0, dp(6), 0, 0);
+        pvBox.addView(wattAnnualPvText);
+        annualRow.addView(pvBox, metricLp(false));
+        card.addView(annualRow);
+
+        wattYearText = UiKit.caption(this, wattYearLabel());
+        wattYearText.setPadding(dp(3), 0, 0, dp(9));
+        card.addView(wattYearText);
+        View dayLine = UiKit.divider(this);
+        LinearLayout.LayoutParams dpLine = new LinearLayout.LayoutParams(-1, dp(1));
+        dpLine.setMargins(0, dp(7), 0, dp(12));
+        card.addView(dayLine, dpLine);
+
+        card.addView(UiKit.overline(this, "NETZBEZUG HEUTE", UiKit.RED));
+        wattTodayText = UiKit.text(this, wattTodayLabel(), 29, UiKit.INK);
+        wattTodayText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayText.setPadding(0, dp(5), 0, dp(10));
         card.addView(wattTodayText);
-        wattLocalStatusText = UiKit.caption(this, "Historie: " + localHistoryStatus);
+
+        LinearLayout tariffRow = UiKit.row(this);
+        tariffRow.setBaselineAligned(false);
+        LinearLayout cheapBox = new LinearLayout(this);
+        cheapBox.setOrientation(LinearLayout.VERTICAL);
+        cheapBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        cheapBox.setBackground(UiKit.roundRect(this, UiKit.PURPLE_SOFT, 14));
+        cheapBox.addView(UiKit.overline(this, "NACHTSTROM · 00–05 UHR", UiKit.PURPLE));
+        wattTodayCheapText = UiKit.text(this, wattCheapLabel(), 19, UiKit.PURPLE);
+        wattTodayCheapText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayCheapText.setPadding(0, dp(6), 0, dp(3));
+        cheapBox.addView(wattTodayCheapText);
+        cheapBox.addView(UiKit.caption(this, String.format(Locale.GERMANY,
+                "%.0f ct/kWh", parseDouble(prefs.get("cheap_price", "19"), 19))));
+        tariffRow.addView(cheapBox, metricLp(true));
+
+        LinearLayout normalBox = new LinearLayout(this);
+        normalBox.setOrientation(LinearLayout.VERTICAL);
+        normalBox.setPadding(dp(12), dp(12), dp(9), dp(12));
+        normalBox.setBackground(UiKit.roundRect(this, UiKit.AMBER_SOFT, 14));
+        normalBox.addView(UiKit.overline(this, "TAGSTROM · AB 05 UHR", UiKit.AMBER));
+        wattTodayNormalText = UiKit.text(this, wattNormalLabel(), 19, UiKit.AMBER);
+        wattTodayNormalText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayNormalText.setPadding(0, dp(6), 0, dp(3));
+        normalBox.addView(wattTodayNormalText);
+        normalBox.addView(UiKit.caption(this, String.format(Locale.GERMANY,
+                "%.0f ct/kWh", parseDouble(prefs.get("normal_price", "29"), 29))));
+        tariffRow.addView(normalBox, metricLp(false));
+        card.addView(tariffRow);
+
+        LinearLayout costRow = UiKit.row(this);
+        TextView costLabel = UiKit.text(this, "Stromkosten heute (geschätzt)", 14, UiKit.MUTED);
+        costRow.addView(costLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        wattTodayCostText = UiKit.text(this, wattCostLabel(), 23, UiKit.INK);
+        wattTodayCostText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        costRow.addView(wattTodayCostText);
+        card.addView(costRow);
+
+        wattTodaySourceText = UiKit.caption(this, todayTariffs().status);
+        wattTodaySourceText.setPadding(0, dp(8), 0, dp(5));
+        card.addView(wattTodaySourceText);
+        wattLocalStatusText = UiKit.caption(this, "Synchronisierung: " + localHistoryStatus);
         card.addView(wattLocalStatusText);
-        card.addView(UiKit.caption(this,
-                "PV-Wertpotenzial ist keine nachgewiesene Ersparnis; Batterieflüsse sind noch nicht erfasst."));
+
+        Double pvDay = pvTodayKwh();
+        if (pvDay != null) {
+            TextView pvToday = UiKit.text(this,
+                    String.format(Locale.GERMANY, "PV-Ertrag heute: %.2f kWh", pvDay),
+                    14, UiKit.GREEN_DARK);
+            pvToday.setPadding(0, dp(10), 0, 0);
+            card.addView(pvToday);
+            double normalCent = parseDouble(prefs.get("normal_price", "29"), 29);
+            card.addView(UiKit.caption(this,
+                    String.format(Locale.GERMANY,
+                        "Theoretisches PV-Wertpotenzial: %.2f € bei %.0f ct/kWh – keine tatsächliche Eigenverbrauchsersparnis",
+                        pvDay * normalCent / 100.0, normalCent)));
+        }
 
         if (homeGraph) {
             long now = System.currentTimeMillis();
