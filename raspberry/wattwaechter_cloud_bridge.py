@@ -48,7 +48,7 @@ def parse_local_host() -> str:
         if addr.version != 4 or not addr.is_private or addr.is_loopback:
             raise ValueError("WATT_LOCAL_HOST muss eine private IPv4-Adresse sein")
     except ValueError as exc:
-        if not re.fullmatch(r"[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.local", host):
+        if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.local", host):
             raise ValueError("WATT_LOCAL_HOST muss eine private IPv4-Adresse oder *.local sein") from exc
     return host
 
