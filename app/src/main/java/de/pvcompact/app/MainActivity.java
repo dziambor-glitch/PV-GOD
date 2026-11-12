@@ -88,6 +88,7 @@ public final class MainActivity extends Activity {
         wattHistory = new WattMeterHistoryStore(this);
         localToday = WattMeterLocalHistory.cached(this, LocalDate.now(BERLIN).toString(),
                 currentCheapStart(), currentCheapEnd());
+        if (localToday != null) localHistoryStatus = "Letzter gespeicherter Stand; Synchronisierung folgt";
 
         getWindow().setStatusBarColor(UiKit.BG);
         getWindow().setNavigationBarColor(UiKit.CARD);
@@ -2423,6 +2424,12 @@ public final class MainActivity extends Activity {
         EditText wattPassword = addLabeledField(wattCard, "MQTT-Passwort",
                 "Im Android Keystore verschlüsselt gespeichert",
                 prefs.getSecret("watt_mqtt_password"), true);
+        EditText wattLocalHost = addLabeledField(wattCard, "WattWächter im Heimnetz · IP oder .local",
+                "Für die gespeicherte Tageshistorie; bei Problemen die lokale IP aus deiner Plume-App eintragen",
+                prefs.get("watt_local_host", "wattwaechter-acebe6036778.local"), false);
+        EditText wattLocalToken = addLabeledField(wattCard, "Lokaler READ-Token (optional)",
+                "Nur wenn API-Schutz am WattWächter aktiviert ist. Kein Cloud- oder MQTT-Passwort.",
+                prefs.getSecret("watt_local_token"), true);
         wattCard.addView(UiKit.caption(this,
                 "Die Kurve enthält nur wirklich empfangene Werte. Fehlende Zeiten sind keine 0-kWh-Zeiten. Octopus bleibt die Quelle für die historischen Tarifstatistiken."));
         content.addView(wattCard);
@@ -2467,6 +2474,10 @@ public final class MainActivity extends Activity {
             prefs.put("watt_mqtt_topic", wattTopic.getText().toString());
             prefs.put("watt_mqtt_user", wattUser.getText().toString());
             prefs.putSecret("watt_mqtt_password", wattPassword.getText().toString());
+            prefs.put("watt_local_host", wattLocalHost.getText().toString());
+            prefs.putSecret("watt_local_token", wattLocalToken.getText().toString());
+            lastLocalSyncAttemptMs = 0L;
+            maybeSyncWattHistory();
 
             prefs.put("controller_url", controllerUrl.getText().toString());
             prefs.putSecret("controller_token", controllerToken.getText().toString());
