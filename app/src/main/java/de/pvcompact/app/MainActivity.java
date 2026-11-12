@@ -80,7 +80,7 @@ public final class MainActivity extends Activity {
     private TextView wattYearText, wattTodayText, wattLocalStatusText;
     private TextView wattTodayCheapText, wattTodayNormalText, wattTodayCostText, wattTodaySourceText;
     private TextView wattAnnualImportText, wattAnnualPvText, wattMeterValueText;
-    private TextView homePvLiveText, homePvTodayText, homePvSavingText, homeActiveTariffText;
+    private TextView homePvLiveText, homePvTodayText, homePvSavingText, homeAnnualCostText, homeActiveTariffText;
     private TextView homeDayBadge, homeNightBadge, homeDayCostText, homeNightCostText, homeLiveBadge;
     private LinearLayout homeDayTariffCard, homeNightTariffCard;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
@@ -454,51 +454,56 @@ public final class MainActivity extends Activity {
         graphCard.addView(graphDetails, graphButton);
         content.addView(graphCard);
 
-        // 4. Octopus tariff reference and estimated yearly PV value, no CO2 card.
-        LinearLayout comparisonRow = UiKit.row(this);
-        comparisonRow.setBaselineAligned(false);
-        LinearLayout go = homeCompactCard("🐙 Octopus Go (NRW)",
-                "Nacht 00–05 Uhr · " + displayCheapRate() + " ct/kWh\n"
-                + "Tag 05–24 Uhr · " + displayNormalRate() + " ct/kWh",
-                UiKit.PURPLE, UiKit.PURPLE_SOFT);
-        comparisonRow.addView(go, metricLp(true));
+        // 4. Three-day forecast in place of redundant Octopus/PV-savings cards.
+        // Use dates, never indexes alone. The third forecast is three calendar
+        // days after today (not "in 2 Tagen").
+        addHomeForecast();
 
-        LinearLayout savings = UiKit.card(this);
-        savings.setPadding(dp(11), dp(11), dp(10), dp(11));
-        savings.addView(UiKit.overline(this, "🌿 EINSPARUNG DURCH PV", UiKit.GREEN_DARK));
-        homePvSavingText = UiKit.text(this, annualPvSavingsLabel(), 21, UiKit.GREEN_DARK);
-        homePvSavingText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        homePvSavingText.setPadding(0, dp(6), 0, dp(3));
-        savings.addView(homePvSavingText);
-        savings.addView(UiKit.caption(this, "theoretischer Jahreswert bei Tagstrompreis"));
-        comparisonRow.addView(savings, metricLp(false));
-        content.addView(comparisonRow);
-
-        // 5. Annual numbers intentionally near the bottom; meter reading is tiny.
+        // 5. Annual values and related estimates in two harmonized cards.
         LinearLayout annual = UiKit.row(this);
         annual.setBaselineAligned(false);
-        LinearLayout netYear = new LinearLayout(this);
-        netYear.setOrientation(LinearLayout.VERTICAL);
-        netYear.setPadding(dp(12), dp(14), dp(8), dp(12));
-        netYear.setBackground(UiKit.roundRect(this, UiKit.BLUE_SOFT, 16));
+        LinearLayout netYear = UiKit.card(this);
+        netYear.setPadding(dp(12), dp(14), dp(11), dp(12));
+        netYear.setBackground(UiKit.outlined(this, UiKit.BLUE_SOFT,
+                Color.rgb(208, 226, 242), 16));
         netYear.addView(UiKit.overline(this, "JAHRESVERBRAUCH " + year, UiKit.BLUE));
         wattAnnualImportText = UiKit.text(this, annualImportLabel(), 20, UiKit.INK);
         wattAnnualImportText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        wattAnnualImportText.setPadding(0, dp(6), 0, dp(3));
+        wattAnnualImportText.setPadding(0, dp(7), 0, dp(4));
         netYear.addView(wattAnnualImportText);
         netYear.addView(UiKit.caption(this, "Netzbezug gesamt"));
+        View netDivider = UiKit.divider(this);
+        LinearLayout.LayoutParams netDivLp = new LinearLayout.LayoutParams(-1, dp(1));
+        netDivLp.setMargins(0, dp(12), 0, dp(10));
+        netYear.addView(netDivider, netDivLp);
+        netYear.addView(UiKit.caption(this, "Ungefähre Stromkosten"));
+        homeAnnualCostText = UiKit.text(this, annualCostEstimateLabel(), 16, UiKit.INK);
+        homeAnnualCostText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        homeAnnualCostText.setPadding(0, dp(3), 0, 0);
+        netYear.addView(homeAnnualCostText);
+        netYear.addView(UiKit.caption(this, annualCostBasisLabel()));
         annual.addView(netYear, metricLp(true));
 
-        LinearLayout pvYear = new LinearLayout(this);
-        pvYear.setOrientation(LinearLayout.VERTICAL);
-        pvYear.setPadding(dp(12), dp(14), dp(8), dp(12));
-        pvYear.setBackground(UiKit.roundRect(this, UiKit.MINT, 16));
+        LinearLayout pvYear = UiKit.card(this);
+        pvYear.setPadding(dp(12), dp(14), dp(11), dp(12));
+        pvYear.setBackground(UiKit.outlined(this, UiKit.MINT,
+                Color.rgb(203, 235, 218), 16));
         pvYear.addView(UiKit.overline(this, "PV-ERZEUGUNG " + year, UiKit.GREEN_DARK));
         wattAnnualPvText = UiKit.text(this, annualPvLabel(), 20, UiKit.INK);
         wattAnnualPvText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        wattAnnualPvText.setPadding(0, dp(6), 0, dp(3));
+        wattAnnualPvText.setPadding(0, dp(7), 0, dp(4));
         pvYear.addView(wattAnnualPvText);
         pvYear.addView(UiKit.caption(this, "Eigene PV-Anlage"));
+        View pvDivider = UiKit.divider(this);
+        LinearLayout.LayoutParams pvDivLp = new LinearLayout.LayoutParams(-1, dp(1));
+        pvDivLp.setMargins(0, dp(12), 0, dp(10));
+        pvYear.addView(pvDivider, pvDivLp);
+        pvYear.addView(UiKit.caption(this, "Ungefähre Einsparung durch PV"));
+        homePvSavingText = UiKit.text(this, annualPvSavingsLabel(), 16, UiKit.GREEN_DARK);
+        homePvSavingText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        homePvSavingText.setPadding(0, dp(3), 0, 0);
+        pvYear.addView(homePvSavingText);
+        pvYear.addView(UiKit.caption(this, "Theoretisch bei vollständigem Eigenverbrauch; ohne Batterieflusskorrektur"));
         annual.addView(pvYear, metricLp(false));
         content.addView(annual);
 
