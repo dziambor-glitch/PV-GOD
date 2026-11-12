@@ -47,6 +47,7 @@ public final class MainActivity extends Activity {
     private volatile String localHistoryStatus = "Lokale Historie noch nicht abgerufen";
     private long lastLocalSyncAttemptMs;
     private volatile boolean localSyncRunning;
+    private volatile boolean retryLocalHistoryPending;
     private boolean inForeground;
     private final Runnable foregroundUpdates = new Runnable() {
         @Override public void run() {
@@ -78,6 +79,7 @@ public final class MainActivity extends Activity {
     private long lastWattUiAt = 0L;
     private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
     private TextView wattYearText, wattTodayText, wattLocalStatusText;
+    private TextView homeHistoryDiagnosticText;
     private TextView wattTodayCheapText, wattTodayNormalText, wattTodayCostText, wattTodaySourceText;
     private TextView wattAnnualImportText, wattAnnualPvText, wattMeterValueText;
     private TextView homePvLiveText, homePvTodayText, homePvSavingText, homeAnnualCostText, homeActiveTariffText;
@@ -129,13 +131,19 @@ public final class MainActivity extends Activity {
     }
 
     private void maybeSyncWattHistory() {
-        if (!prefs.getBool("watt_mqtt_enabled", false)) return;
+        // Local REST history is independent of the optional MQTT connection.
         long now = System.currentTimeMillis();
         if (localSyncRunning || now - lastLocalSyncAttemptMs < 5 * 60_000L) return;
         String host = prefs.get("watt_local_host", "wattwaechter-acebe6036778.local").trim();
-        if (host.isEmpty()) return;
+        if (host.isEmpty()) {
+            localHistoryStatus = "Keine lokale WattWächter-Adresse eingetragen";
+            updateWattMeterTexts();
+            return;
+        }
         localSyncRunning = true;
         lastLocalSyncAttemptMs = now;
+        localHistoryStatus = "Verbindung zu " + host + " wird geprüft";
+        updateWattMeterTexts();
         io.execute(() -> {
             try {
                 String date = LocalDate.now(BERLIN).toString();
@@ -143,7 +151,8 @@ public final class MainActivity extends Activity {
                         this, host, prefs.getSecret("watt_local_token"), date,
                         currentCheapStart(), currentCheapEnd());
                 localToday = day;
-                localHistoryStatus = "Lokale Zählerhistorie synchronisiert";
+                localHistoryStatus = "Tageshistorie synchronisiert · "
+                        + String.format(Locale.GERMANY, "%.2f kWh", day.importKwh);
                 runOnUiThread(() -> {
                     lastWattChartAt = 0L; // Refresh freshly loaded daily totals immediately.
                     updateWattMeterTexts();
@@ -152,12 +161,57 @@ public final class MainActivity extends Activity {
                     if (wattDayChart != null) wattDayChart.setHistoricalNetData(day.curve);
                 });
             } catch (Exception e) {
-                localHistoryStatus = "Historie nur im Heim-WLAN: " + cleanError(e);
+                localHistoryStatus = "Abruf fehlgeschlagen: " + historyError(e);
                 runOnUiThread(this::updateWattMeterTexts);
             } finally {
                 localSyncRunning = false;
+                // If settings changed while a request was running, query the
+                // newly saved address immediately rather than losing the retry.
+                if (retryLocalHistoryPending) {
+                    retryLocalHistoryPending = false;
+                    runOnUiThread(this::refreshLocalHistoryNow);
+                }
             }
         });
+    }
+
+    private void refreshLocalHistoryNow() {
+        if (localSyncRunning) {
+            retryLocalHistoryPending = true;
+            localHistoryStatus = "Abruf läuft – erneuter Versuch folgt";
+            updateWattMeterTexts();
+            return;
+        }
+        lastLocalSyncAttemptMs = 0L;
+        maybeSyncWattHistory();
+    }
+
+    private String historyError(Exception e) {
+        if (e instanceof java.net.UnknownHostException)
+            return "Hostname nicht auflösbar. Bitte die lokale IP-Adresse aus Plume eintragen";
+        if (e instanceof java.net.ConnectException)
+            return "Gerät nicht erreichbar. WLAN und lokale IP prüfen";
+        if (e instanceof java.net.SocketTimeoutException)
+            return "Zeitüberschreitung. WattWächter oder Heim-WLAN prüfen";
+        String msg = cleanError(e);
+        if (msg.contains("401") || msg.contains("403") || msg.contains("READ-API-Token"))
+            return "API-Zugriff verweigert. Eventuell READ-Token erforderlich";
+        if (msg.contains("429") || msg.contains("503"))
+            return "Gerät derzeit ausgelastet (HTTP 429/503). Gleich erneut versuchen";
+        return msg;
+    }
+
+    private String historyDiagnosticText() {
+        return "Lokale Historie: " + localHistoryStatus + " · Tippen zum erneuten Laden";
+    }
+
+    private int historyDiagnosticColor() {
+        if (localHistoryStatus.startsWith("Tageshistorie synchronisiert"))
+            return UiKit.GREEN_DARK;
+        if (localHistoryStatus.startsWith("Abruf fehlgeschlagen")
+                || localHistoryStatus.startsWith("Keine lokale"))
+            return UiKit.RED;
+        return UiKit.MUTED;
     }
 
     private void ensureWattMeter() {
@@ -393,6 +447,12 @@ public final class MainActivity extends Activity {
         wattTodaySourceText = UiKit.caption(this, todayTariffs().status);
         wattTodaySourceText.setPadding(0, dp(9), 0, 0);
         live.addView(wattTodaySourceText);
+        homeHistoryDiagnosticText = UiKit.text(this, historyDiagnosticText(), 12,
+                historyDiagnosticColor());
+        homeHistoryDiagnosticText.setPadding(0, dp(6), 0, dp(4));
+        homeHistoryDiagnosticText.setOnClickListener(v -> refreshLocalHistoryNow());
+        homeHistoryDiagnosticText.setClickable(true);
+        live.addView(homeHistoryDiagnosticText);
         Double measuredHouseDay = pvHouseTodayKwh();
         if (measuredHouseDay != null) {
             TextView house = UiKit.caption(this, String.format(Locale.GERMANY,
@@ -2288,6 +2348,10 @@ public final class MainActivity extends Activity {
         if (wattTodayNormalText != null) wattTodayNormalText.setText(wattNormalLabel());
         if (wattTodayCostText != null) wattTodayCostText.setText(wattCostLabel());
         if (wattTodaySourceText != null) wattTodaySourceText.setText(todayTariffs().status);
+        if (homeHistoryDiagnosticText != null) {
+            homeHistoryDiagnosticText.setText(historyDiagnosticText());
+            homeHistoryDiagnosticText.setTextColor(historyDiagnosticColor());
+        }
         if (homePvLiveText != null) homePvLiveText.setText(pvNowLabel());
         if (homePvTodayText != null) homePvTodayText.setText(pvTodayLabel());
         if (homePvSavingText != null) homePvSavingText.setText(annualPvSavingsLabel());
@@ -2903,8 +2967,8 @@ public final class MainActivity extends Activity {
             prefs.putSecret("watt_mqtt_password", wattPassword.getText().toString());
             prefs.put("watt_local_host", wattLocalHost.getText().toString());
             prefs.putSecret("watt_local_token", wattLocalToken.getText().toString());
-            lastLocalSyncAttemptMs = 0L;
-            maybeSyncWattHistory();
+            // Always check the new local host immediately after saving settings.
+            refreshLocalHistoryNow();
 
             prefs.put("controller_url", controllerUrl.getText().toString());
             prefs.putSecret("controller_token", controllerToken.getText().toString());
@@ -3135,6 +3199,7 @@ public final class MainActivity extends Activity {
 
     private void refreshAll() {
         Toast.makeText(this, "Daten werden aktualisiert …", Toast.LENGTH_SHORT).show();
+        refreshLocalHistoryNow();
         refreshPvForecast(true);
         if (!prefs.get("oct_account", "").isEmpty()
                 && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())) {
