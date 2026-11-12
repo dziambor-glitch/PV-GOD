@@ -11,6 +11,7 @@ on:
       - feature/wattwaechter-history-v181
       - feature/wattwaechter-home-layout-v182
       - feature/pvcompact-mockup-v183
+      - feature/pvcompact-forecast-v184
       - stats-meter-reading-v177
       - octopus-day-validation-v176
       - octopus-day-breakdown-v175
@@ -84,19 +85,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v1.8.3-pvcompact-live-ui"
-          ASSET="PVCompact-Live-v1.8.3.apk"
+          TAG="v1.8.4-pvcompact-forecast"
+          ASSET="PVCompact-Prognose-v1.8.4.apk"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "PV Compact Live 1.8.3 (Android APK)" \
-              --notes "Freigegebenes helles Startseiten-Layout mit Live-Anzeige, Tages-PV/Netz, deutlich vergrößerter Tageskurve, Tag-/Nachtstrom und Kosten, Octopus, PV-Potenzial sowie Jahreswerten unten; WattWächter-Historie bleibt integriert. Eigenständige Android-Test-App." \
+              --title "PV Compact Prognose 1.8.4 (Android APK)" \
+              --notes "Das helle PV-Compact-Dashboard mit WattWächter-Live, PV-/Netz-Tageskurve und Tag-/Nachtstrom. Neue Forecast-Kacheln für morgen (+ Datum), übermorgen (+ Datum), dritten Tag (+ Wochentag und Datum). PV-Wertpotenzial in der Jahres-PV-Kachel, Netzjahreskosten als Octopus-Mix-Schätzung oder ehrlich gekennzeichneter Tarifkostenbereich. Die bisherigen doppelten Octopus-Go-/PV-Sparkacheln auf Home entfernt. Eigenständige Android-Test-App." \
               --prerelease --latest=false
           gh release upload "$TAG" "app/build/outputs/apk/debug/app-debug.apk#$ASSET" -R "$GITHUB_REPOSITORY" --clobber
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-v1.8.3-light-home
+          name: PVCompact-v1.8.4-forecast-home
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
