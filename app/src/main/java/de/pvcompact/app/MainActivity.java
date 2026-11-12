@@ -2290,6 +2290,7 @@ public final class MainActivity extends Activity {
         if (homePvLiveText != null) homePvLiveText.setText(pvNowLabel());
         if (homePvTodayText != null) homePvTodayText.setText(pvTodayLabel());
         if (homePvSavingText != null) homePvSavingText.setText(annualPvSavingsLabel());
+        if (homeAnnualCostText != null) homeAnnualCostText.setText(annualCostEstimateLabel());
         if (homeDayCostText != null) homeDayCostText.setText(displayNormalRate()
                 + " ct/kWh · " + tariffCostLabel(false));
         if (homeNightCostText != null) homeNightCostText.setText(displayCheapRate()
