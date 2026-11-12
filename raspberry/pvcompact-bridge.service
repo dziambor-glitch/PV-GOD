@@ -1,0 +1,24 @@
+[Unit]
+Description=PV Compact - WattWaechter daily history to EMQX
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/pvcompact-bridge.env
+WorkingDirectory=/opt/pvcompact-bridge
+ExecStart=/opt/pvcompact-bridge/.venv/bin/python /opt/pvcompact-bridge/wattwaechter_cloud_bridge.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

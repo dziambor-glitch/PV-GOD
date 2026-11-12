@@ -38,12 +38,13 @@ public final class WattMeterLocalHistory {
         public final Double currentMeterKwh;
         public final boolean tariffSplitAvailable;
         public final long fetchedAtMs;
+        public final boolean fromCloud;
         public final long lastIntervalMs;
         public final List<WattMeterHistoryStore.Point> curve;
 
         Day(String date, double imported, double exported, double cheap, double normal,
             Double meterKwh, boolean hasTariffSplit,
-            long fetchedAt, long lastInterval, List<WattMeterHistoryStore.Point> points) {
+            long fetchedAt, boolean fromCloud, long lastInterval, List<WattMeterHistoryStore.Point> points) {
             this.date = date;
             this.importKwh = imported;
             this.exportKwh = exported;
@@ -52,6 +53,7 @@ public final class WattMeterLocalHistory {
             this.currentMeterKwh = meterKwh;
             this.tariffSplitAvailable = hasTariffSplit;
             this.fetchedAtMs = fetchedAt;
+            this.fromCloud = fromCloud;
             this.lastIntervalMs = lastInterval;
             this.curve = points;
         }
@@ -88,6 +90,7 @@ public final class WattMeterLocalHistory {
         context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
                 .putString("date_" + date, response.body)
                 .putLong("fetched_" + date, parsed.fetchedAtMs)
+                .putBoolean("cloud_" + date, false)
                 .apply();
         return parsed;
     }
@@ -98,12 +101,17 @@ public final class WattMeterLocalHistory {
         if (body == null || body.isEmpty()) return null;
         try {
             return parse(body, date, pref.getLong("fetched_" + date, 0),
-                    cheapStart, cheapEnd);
+                    cheapStart, cheapEnd, pref.getBoolean("cloud_" + date, false));
         } catch (Exception ignored) { return null; }
     }
 
     static Day parse(String json, String desiredDate, long fetchedAt,
                      String cheapStart, String cheapEnd) throws Exception {
+        return parse(json, desiredDate, fetchedAt, cheapStart, cheapEnd, false);
+    }
+
+    static Day parse(String json, String desiredDate, long fetchedAt,
+                     String cheapStart, String cheapEnd, boolean fromCloud) throws Exception {
         JSONObject root = new JSONObject(json);
         String start = root.optString("start", desiredDate);
         if (!start.startsWith(desiredDate)) return null;
@@ -174,7 +182,40 @@ public final class WattMeterLocalHistory {
         }
         return new Day(desiredDate, summaryImport, summaryExport,
                 cheap, normal, lastRegister, sumWeights > 0,
-                fetchedAt, lastMs, curve);
+                fetchedAt, fromCloud, lastMs, curve);
+    }
+
+    /**
+     * Accept a retained EMQX history message only for the current Berlin day.
+     * The publisher's timestamp is preserved so a retained message never appears
+     * newer than it really is. Cache only an accepted, correctly parsed snapshot.
+     */
+    public static Day ingestCloud(Context context, String json,
+                                  String cheapStart, String cheapEnd) throws Exception {
+        if (json == null || json.length() > 96_000)
+            throw new IllegalArgumentException("Ungültige MQTT-Historiengröße");
+        JSONObject root = new JSONObject(json);
+        if (root.optInt("bridge_version", -1) != 1)
+            throw new IllegalArgumentException("Nicht unterstütztes Bridge-Format");
+        String today = LocalDate.now(BERLIN).toString();
+        if (!today.equals(root.optString("date", "")))
+            throw new IllegalArgumentException("MQTT-Historie ist nicht für heute");
+        long published = root.optLong("published_at_ms", 0);
+        long now = System.currentTimeMillis();
+        if (published < now - 24L * 3600000L || published > now + 5L * 60000L)
+            throw new IllegalArgumentException("MQTT-Historie veraltet oder Zeitstempel ungültig");
+        Day day = parse(json, today, published, cheapStart, cheapEnd, true);
+        if (day == null)
+            throw new IllegalArgumentException("MQTT-Historie enthält keine gültigen Messwerte");
+        SharedPreferences pref = context.getSharedPreferences(STORE, Context.MODE_PRIVATE);
+        if (published >= pref.getLong("fetched_" + today, 0)) {
+            pref.edit()
+                    .putString("date_" + today, json)
+                    .putLong("fetched_" + today, published)
+                    .putBoolean("cloud_" + today, true)
+                    .apply();
+        }
+        return day;
     }
 
     private static boolean isCheap(java.time.LocalTime time, String from, String to) {
