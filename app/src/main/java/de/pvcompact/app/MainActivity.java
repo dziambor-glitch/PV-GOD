@@ -354,10 +354,12 @@ public final class MainActivity extends Activity {
         String tomorrow = forecast.size() > 1
                 ? String.format(Locale.GERMANY, "%.1f kWh", adjustedForecastKwh(forecast.get(1)))
                 : "—";
-        row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
-                metricLp(true));
-
         Double houseTotal = pvHouseTodayKwh();
+        row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
+                houseTotal == null
+                        ? new LinearLayout.LayoutParams(-1, -2)
+                        : metricLp(true));
+
         if (houseTotal != null) {
             row2.addView(metric("HAUS HEUTE",
                             String.format(Locale.GERMANY, "%.1f kWh", houseTotal),
