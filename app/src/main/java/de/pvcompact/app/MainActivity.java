@@ -43,12 +43,17 @@ public final class MainActivity extends Activity {
     private final ExecutorService io = Executors.newFixedThreadPool(3);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private long lastPvRefreshRequestMs, lastOctopusRefreshRequestMs, lastWattAttemptMs;
+    private volatile WattMeterLocalHistory.Day localToday;
+    private volatile String localHistoryStatus = "Lokale Historie noch nicht abgerufen";
+    private long lastLocalSyncAttemptMs;
+    private volatile boolean localSyncRunning;
     private boolean inForeground;
     private final Runnable foregroundUpdates = new Runnable() {
         @Override public void run() {
             if (!inForeground || isFinishing()) return;
             maybeRefreshSources();
             ensureWattMeter();
+            maybeSyncWattHistory();
             updateWattMeterTexts();
             mainHandler.postDelayed(this, 15000L);
         }
@@ -81,6 +86,8 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         prefs = new Prefs(this);
         wattHistory = new WattMeterHistoryStore(this);
+        localToday = WattMeterLocalHistory.cached(this, LocalDate.now(BERLIN).toString(),
+                currentCheapStart(), currentCheapEnd());
 
         getWindow().setStatusBarColor(UiKit.BG);
         getWindow().setNavigationBarColor(UiKit.CARD);
@@ -113,6 +120,37 @@ public final class MainActivity extends Activity {
         if (!prefs.get("oct_account", "").isEmpty()
                 && (!prefs.getSecret("oct_api_key").isEmpty() || !prefs.getSecret("oct_refresh").isEmpty())
                 && now - lastOctopusRefreshRequestMs > 45 * 60_000L) refreshOctopus();
+    }
+
+    private void maybeSyncWattHistory() {
+        if (!prefs.getBool("watt_mqtt_enabled", false)) return;
+        long now = System.currentTimeMillis();
+        if (localSyncRunning || now - lastLocalSyncAttemptMs < 5 * 60_000L) return;
+        String host = prefs.get("watt_local_host", "wattwaechter-acebe6036778.local").trim();
+        if (host.isEmpty()) return;
+        localSyncRunning = true;
+        lastLocalSyncAttemptMs = now;
+        io.execute(() -> {
+            try {
+                String date = LocalDate.now(BERLIN).toString();
+                WattMeterLocalHistory.Day day = WattMeterLocalHistory.sync(
+                        this, host, prefs.getSecret("watt_local_token"), date,
+                        currentCheapStart(), currentCheapEnd());
+                localToday = day;
+                localHistoryStatus = "Lokale Zählerhistorie synchronisiert";
+                runOnUiThread(() -> {
+                    updateWattMeterTexts();
+                    if (wattHomeChart != null) wattHomeChart.setHistoricalNetData(day.curve);
+                    if (wattHourChart != null) wattHourChart.setHistoricalNetData(day.curve);
+                    if (wattDayChart != null) wattDayChart.setHistoricalNetData(day.curve);
+                });
+            } catch (Exception e) {
+                localHistoryStatus = "Historie nur im Heim-WLAN: " + cleanError(e);
+                runOnUiThread(this::updateWattMeterTexts);
+            } finally {
+                localSyncRunning = false;
+            }
+        });
     }
 
     private void ensureWattMeter() {
