@@ -13,6 +13,7 @@ on:
       - feature/pvcompact-mockup-v183
       - feature/pvcompact-forecast-v184
       - fix/wattwaechter-history-diagnostics-v185
+      - feature/pvcompact-cloud-history-v186
       - stats-meter-reading-v177
       - octopus-day-validation-v176
       - octopus-day-breakdown-v175
@@ -64,6 +65,10 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
+      - name: Check Raspberry bridge Python syntax
+        shell: bash
+        run: python3 -m py_compile raspberry/wattwaechter_cloud_bridge.py
+
       - name: Build debug APK
         shell: bash
         run: |
@@ -86,19 +91,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v1.8.5-wattwaechter-history-diagnose"
-          ASSET="PVCompact-Diagnose-v1.8.5.apk"
+          TAG="v1.8.6-pvcompact-cloud-history"
+          ASSET="PVCompact-Cloud-v1.8.6.apk"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "PV Compact Diagnose 1.8.5 (Android APK)" \
-              --notes "Wie Version 1.8.4 mit WattWächter-Live, PV-Forecast, Tarif- und Jahreskacheln. Neu: sichtbare lokale History-Fehlermeldungen, History-Abruf per Statuszeile oder Aktualisieren-Knopf, funktionierende sofortige Wiederholung nach geänderter LAN-IP. Eigenständige Android-Testinstallation." \
+              --title "PV Compact Cloud 1.8.6 (Android APK)" \
+              --notes "PV Compact 1.8.6 kann vollständige WattWaechter-Tageshistorie inkl. 15-Minuten-Verlauf auch außerhalb des Heimnetzes per EMQX TLS MQTT laden. Benötigt den im raspberry/-Ordner dokumentierten 3-Minuten-Raspberry-Bridge-Service; ohne Bridge funktionieren weiterhin direkte lokale Historie und bestehende MQTT-Live-Werte. Datum/Stand der Cloud-Nachricht werden validiert. Alle Kacheln und Forecast der letzten Version bleiben erhalten." \
               --prerelease --latest=false
           gh release upload "$TAG" "app/build/outputs/apk/debug/app-debug.apk#$ASSET" -R "$GITHUB_REPOSITORY" --clobber
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PVCompact-v1.8.5-diagnostics
+          name: PVCompact-v1.8.6-cloud-history
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
