@@ -80,6 +80,9 @@ public final class MainActivity extends Activity {
     private TextView wattYearText, wattTodayText, wattLocalStatusText;
     private TextView wattTodayCheapText, wattTodayNormalText, wattTodayCostText, wattTodaySourceText;
     private TextView wattAnnualImportText, wattAnnualPvText, wattMeterValueText;
+    private TextView homePvLiveText, homePvTodayText, homePvSavingText, homeActiveTariffText;
+    private TextView homeDayBadge, homeNightBadge;
+    private LinearLayout homeDayTariffCard, homeNightTariffCard;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
@@ -307,177 +310,301 @@ public final class MainActivity extends Activity {
         }
     }
 
+    // PV Compact Home: approved light-card mockup (v1.8.3).
+    // The complete day's figures come from the local WattWächter history, not from
+    // instantaneous MQTT wattage sampled only while Android is in foreground.
     private void showHome() {
-        pageHeader(greeting(), "Dein Energie-Dashboard für heute");
-        showWattMeterCard();
+        wattHomeChart = null;
+        homeDayTariffCard = null;
+        homeNightTariffCard = null;
+        int year = LocalDate.now(BERLIN).getYear();
 
-        if (pv == null) {
-            LinearLayout empty = UiKit.card(this);
-            empty.addView(UiKit.overline(this, "PVOUTPUT", UiKit.GREEN));
-            TextView h = UiKit.text(this, "Noch keine PV-Daten", 21, UiKit.INK);
-            h.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-            h.setPadding(0, dp(8), 0, dp(6));
-            empty.addView(h);
-            empty.addView(UiKit.caption(this,
-                    pvError.isEmpty()
-                            ? "Hinterlege in den Einstellungen deine PVOutput System-ID und den API-Key."
-                            : pvError));
-            Button setup = UiKit.primaryButton(this, "PVOutput einrichten");
-            setup.setOnClickListener(v -> showTab("Einstellungen"));
-            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, dp(48));
-            bp.setMargins(0, dp(14), 0, 0);
-            empty.addView(setup, bp);
-            content.addView(empty);
-        } else {
-            heroToday();
+        // 1. LIVE WattWächter with exactly ONE current grid direction.
+        LinearLayout live = UiKit.card(this);
+        LinearLayout title = UiKit.row(this);
+        TextView logo = UiKit.text(this, "♧", 31, UiKit.GREEN_DARK);
+        logo.setGravity(Gravity.CENTER);
+        logo.setBackground(UiKit.roundRect(this, UiKit.MINT, 13));
+        title.addView(logo, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout titleWords = new LinearLayout(this);
+        titleWords.setOrientation(LinearLayout.VERTICAL);
+        titleWords.setPadding(dp(11), 0, 0, 0);
+        TextView wattName = UiKit.text(this, "WattWächter", 21, UiKit.INK);
+        wattName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        titleWords.addView(wattName);
+        titleWords.addView(UiKit.caption(this, "Aktuelle Leistung & Tagesbilanz"));
+        title.addView(titleWords, new LinearLayout.LayoutParams(0, -2, 1f));
+        wattStateText = UiKit.pill(this, "● Live", UiKit.GREEN_DARK, UiKit.MINT);
+        title.addView(wattStateText);
+        live.addView(title);
+
+        LinearLayout liveMetrics = UiKit.row(this);
+        liveMetrics.setBaselineAligned(false);
+        LinearLayout meterLiveBox = new LinearLayout(this);
+        meterLiveBox.setOrientation(LinearLayout.VERTICAL);
+        meterLiveBox.setPadding(dp(4), dp(12), dp(5), dp(10));
+        wattPowerText = UiKit.text(this, wattPowerLabel(), 31, wattActiveColor());
+        wattPowerText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        meterLiveBox.addView(wattPowerText);
+        wattModeText = UiKit.text(this, wattModeLabel(), 12, wattActiveColor());
+        meterLiveBox.addView(wattModeText);
+        liveMetrics.addView(meterLiveBox, metricLp(true));
+        LinearLayout pvLiveBox = new LinearLayout(this);
+        pvLiveBox.setOrientation(LinearLayout.VERTICAL);
+        pvLiveBox.setPadding(dp(10), dp(12), dp(4), dp(10));
+        homePvLiveText = UiKit.text(this, pvNowLabel(), 29, UiKit.GREEN_DARK);
+        homePvLiveText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        pvLiveBox.addView(homePvLiveText);
+        pvLiveBox.addView(UiKit.caption(this, "☀ PV-Leistung jetzt"));
+        liveMetrics.addView(pvLiveBox, metricLp(false));
+        live.addView(liveMetrics);
+        View liveLine = UiKit.divider(this);
+        LinearLayout.LayoutParams liveLineParams = new LinearLayout.LayoutParams(-1, dp(1));
+        liveLineParams.setMargins(0, dp(3), 0, dp(12));
+        live.addView(liveLine, liveLineParams);
+
+        // Today's PV and grid kWh side-by-side, one occurrence of each.
+        LinearLayout todayRow = UiKit.row(this);
+        todayRow.setBaselineAligned(false);
+        LinearLayout pvTodayBox = new LinearLayout(this);
+        pvTodayBox.setOrientation(LinearLayout.VERTICAL);
+        pvTodayBox.setPadding(dp(11), dp(11), dp(8), dp(11));
+        pvTodayBox.setBackground(UiKit.roundRect(this, UiKit.MINT, 14));
+        pvTodayBox.addView(UiKit.overline(this, "☀ PV-ERZEUGUNG HEUTE", UiKit.GREEN_DARK));
+        homePvTodayText = UiKit.text(this, pvTodayLabel(), 19, UiKit.GREEN_DARK);
+        homePvTodayText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        homePvTodayText.setPadding(0, dp(6), 0, 0);
+        pvTodayBox.addView(homePvTodayText);
+        todayRow.addView(pvTodayBox, metricLp(true));
+
+        LinearLayout netTodayBox = new LinearLayout(this);
+        netTodayBox.setOrientation(LinearLayout.VERTICAL);
+        netTodayBox.setPadding(dp(11), dp(11), dp(8), dp(11));
+        netTodayBox.setBackground(UiKit.roundRect(this, UiKit.BLUE_SOFT, 14));
+        netTodayBox.addView(UiKit.overline(this, "⚡ NETZBEZUG HEUTE", UiKit.BLUE));
+        wattTodayText = UiKit.text(this, wattTodayLabel(), 19, UiKit.BLUE);
+        wattTodayText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattTodayText.setPadding(0, dp(6), 0, 0);
+        netTodayBox.addView(wattTodayText);
+        todayRow.addView(netTodayBox, metricLp(false));
+        live.addView(todayRow);
+        wattTodaySourceText = UiKit.caption(this, todayTariffs().status);
+        wattTodaySourceText.setPadding(0, dp(9), 0, 0);
+        live.addView(wattTodaySourceText);
+        content.addView(live);
+
+        // 2. Clear active/inactive dual tariff cards. Active state represents NOW
+        // only; daily kWh remains cumulative regardless of active state.
+        LinearLayout tariffRow = UiKit.row(this);
+        tariffRow.setBaselineAligned(false);
+        homeDayTariffCard = tariffHomeCard(false);
+        tariffRow.addView(homeDayTariffCard, metricLp(true));
+        homeNightTariffCard = tariffHomeCard(true);
+        tariffRow.addView(homeNightTariffCard, metricLp(false));
+        content.addView(tariffRow);
+        updateHomeTariffStatus();
+
+        // 3. Double-height graph with actual WattWächter history and PVOutput.
+        LinearLayout graphCard = UiKit.card(this);
+        LinearLayout graphTitle = UiKit.row(this);
+        TextView gIcon = UiKit.text(this, "▥", 25, UiKit.GREEN_DARK);
+        graphTitle.addView(gIcon);
+        TextView gTitle = UiKit.text(this, "Heute · PV und Netzleistung", 17, UiKit.INK);
+        gTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        gTitle.setPadding(dp(8), 0, 0, 0);
+        graphTitle.addView(gTitle);
+        graphCard.addView(graphTitle);
+        long now = System.currentTimeMillis();
+        long startOfDay = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
+        wattHomeChart = new GridPowerChartView(this);
+        try {
+            wattHomeChart.setData(wattHistory.load(startOfDay, now), startOfDay, now, true);
+            wattHomeChart.setPvData(pvOutputPlotPoints(startOfDay, now));
+            WattMeterLocalHistory.Day d = localToday;
+            if (d != null && LocalDate.now(BERLIN).toString().equals(d.date))
+                wattHomeChart.setHistoricalNetData(d.curve);
+        } catch (Exception ignored) {}
+        graphCard.addView(wattHomeChart, new LinearLayout.LayoutParams(-1, dp(430)));
+        graphCard.addView(UiKit.caption(this,
+                "Rot: Netzbezug · Grün: PV-Erzeugung · fehlende Zeiten bleiben leer"));
+        Button graphDetails = UiKit.secondaryButton(this, "▥   Netzbezug & Tagesgrafik ansehen   ›");
+        graphDetails.setOnClickListener(v -> showTab("Netz"));
+        LinearLayout.LayoutParams graphButton = new LinearLayout.LayoutParams(-1, dp(48));
+        graphButton.setMargins(0, dp(12), 0, 0);
+        graphCard.addView(graphDetails, graphButton);
+        content.addView(graphCard);
+
+        // 4. Octopus tariff reference and estimated yearly PV value, no CO2 card.
+        LinearLayout comparisonRow = UiKit.row(this);
+        comparisonRow.setBaselineAligned(false);
+        LinearLayout go = homeCompactCard("🐙 Octopus Go (NRW)",
+                "Nacht 00–05 Uhr · " + displayCheapRate() + " ct/kWh\n"
+                + "Tag 05–24 Uhr · " + displayNormalRate() + " ct/kWh",
+                UiKit.PURPLE, UiKit.PURPLE_SOFT);
+        comparisonRow.addView(go, metricLp(true));
+
+        LinearLayout savings = UiKit.card(this);
+        savings.setPadding(dp(11), dp(11), dp(10), dp(11));
+        savings.addView(UiKit.overline(this, "🌿 EINSPARUNG DURCH PV", UiKit.GREEN_DARK));
+        homePvSavingText = UiKit.text(this, annualPvSavingsLabel(), 21, UiKit.GREEN_DARK);
+        homePvSavingText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        homePvSavingText.setPadding(0, dp(6), 0, dp(3));
+        savings.addView(homePvSavingText);
+        savings.addView(UiKit.caption(this, "theoretischer Jahreswert bei Tagstrompreis"));
+        comparisonRow.addView(savings, metricLp(false));
+        content.addView(comparisonRow);
+
+        // 5. Annual numbers intentionally near the bottom; meter reading is tiny.
+        LinearLayout annual = UiKit.row(this);
+        annual.setBaselineAligned(false);
+        LinearLayout netYear = new LinearLayout(this);
+        netYear.setOrientation(LinearLayout.VERTICAL);
+        netYear.setPadding(dp(12), dp(14), dp(8), dp(12));
+        netYear.setBackground(UiKit.roundRect(this, UiKit.BLUE_SOFT, 16));
+        netYear.addView(UiKit.overline(this, "JAHRESVERBRAUCH " + year, UiKit.BLUE));
+        wattAnnualImportText = UiKit.text(this, annualImportLabel(), 20, UiKit.INK);
+        wattAnnualImportText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattAnnualImportText.setPadding(0, dp(6), 0, dp(3));
+        netYear.addView(wattAnnualImportText);
+        netYear.addView(UiKit.caption(this, "Netzbezug gesamt"));
+        annual.addView(netYear, metricLp(true));
+
+        LinearLayout pvYear = new LinearLayout(this);
+        pvYear.setOrientation(LinearLayout.VERTICAL);
+        pvYear.setPadding(dp(12), dp(14), dp(8), dp(12));
+        pvYear.setBackground(UiKit.roundRect(this, UiKit.MINT, 16));
+        pvYear.addView(UiKit.overline(this, "PV-ERZEUGUNG " + year, UiKit.GREEN_DARK));
+        wattAnnualPvText = UiKit.text(this, annualPvLabel(), 20, UiKit.INK);
+        wattAnnualPvText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        wattAnnualPvText.setPadding(0, dp(6), 0, dp(3));
+        pvYear.addView(wattAnnualPvText);
+        pvYear.addView(UiKit.caption(this, "Eigene PV-Anlage"));
+        annual.addView(pvYear, metricLp(false));
+        content.addView(annual);
+
+        LinearLayout meterCard = UiKit.card(this);
+        LinearLayout meterRow = UiKit.row(this);
+        meterRow.addView(UiKit.caption(this, "◷   Aktueller Zählerstand: "));
+        wattMeterValueText = UiKit.text(this, wattRegisterLabel(), 13, UiKit.INK);
+        wattMeterValueText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        meterRow.addView(wattMeterValueText);
+        meterCard.addView(meterRow);
+        wattYearText = UiKit.caption(this, wattYearLabel());
+        wattYearText.setPadding(0, dp(4), 0, 0);
+        meterCard.addView(wattYearText);
+        content.addView(meterCard);
+
+        // Detailed PV/forecast/Octopus/statistics/system screens are kept as tabs.
+        // The former "PV sinnvoll nutzen statt abregeln" promotion is omitted.
+    }
+
+    private String pvNowLabel() {
+        if (pv == null || pv.live == null || !Double.isFinite(pv.live.powerW)) return "—";
+        return String.format(Locale.GERMANY, "%.0f W", Math.max(0, pv.live.powerW));
+    }
+
+    private String pvTodayLabel() {
+        Double value = pvTodayKwh();
+        return value == null ? "—" : String.format(Locale.GERMANY, "%.2f kWh", value);
+    }
+
+    private int displayCheapRate() {
+        return (int)Math.round(parseDouble(prefs.get("cheap_price", "19"), 19));
+    }
+
+    private int displayNormalRate() {
+        return (int)Math.round(parseDouble(prefs.get("normal_price", "29"), 29));
+    }
+
+    private String annualPvSavingsLabel() {
+        int y = LocalDate.now(BERLIN).getYear();
+        if (!hasPvYear(y)) return "—";
+        double theoretical = pvForYear(y) * displayNormalRate() / 100.0;
+        return String.format(Locale.GERMANY, "ca. %,.2f €", theoretical);
+    }
+
+    private LinearLayout homeCompactCard(String heading, String detail, int color, int bg) {
+        LinearLayout card = UiKit.card(this);
+        card.setPadding(dp(11), dp(11), dp(8), dp(11));
+        card.addView(UiKit.overline(this, heading, color));
+        TextView text = UiKit.text(this, detail, 12, UiKit.INK);
+        text.setPadding(0, dp(7), 0, 0);
+        text.setLineSpacing(dp(5), 1.06f);
+        card.addView(text);
+        return card;
+    }
+
+    private LinearLayout tariffHomeCard(boolean night) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(11), dp(11), dp(9), dp(11));
+
+        LinearLayout heading = UiKit.row(this);
+        TextView icon = UiKit.text(this, night ? "☾" : "☀", 25,
+                night ? UiKit.PURPLE : UiKit.AMBER);
+        heading.addView(icon);
+        TextView title = UiKit.text(this, night ? "Nachtstrom" : "Tagstrom", 15, UiKit.INK);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        titleLp.setMargins(dp(5), 0, 0, 0);
+        heading.addView(title, titleLp);
+        TextView badge = UiKit.text(this, "—", 11, UiKit.MUTED);
+        badge.setPadding(dp(7), dp(3), dp(7), dp(3));
+        heading.addView(badge);
+        if (night) homeNightBadge = badge;
+        else homeDayBadge = badge;
+        card.addView(heading);
+
+        TextView times = UiKit.caption(this, night ? "00:00–05:00 Uhr" : "05:00–24:00 Uhr");
+        times.setPadding(0, dp(3), 0, dp(2));
+        card.addView(times);
+        TextView amount = UiKit.text(this, night ? wattCheapLabel() : wattNormalLabel(),
+                21, UiKit.INK);
+        amount.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        amount.setPadding(0, dp(6), 0, dp(3));
+        card.addView(amount);
+        if (night) wattTodayCheapText = amount;
+        else wattTodayNormalText = amount;
+
+        TextView footer = UiKit.caption(this,
+                (night ? displayCheapRate() : displayNormalRate()) + " ct/kWh · "
+                + tariffCostLabel(night));
+        card.addView(footer);
+        if (night) homeNightCostText = footer;
+        else homeDayCostText = footer;
+        return card;
+    }
+
+    private String tariffCostLabel(boolean night) {
+        TodayTariffs t = todayTariffs();
+        if (!t.splitAvailable) return "—";
+        double kwh = night ? t.cheapKwh : t.normalKwh;
+        double rate = night ? displayCheapRate() : displayNormalRate();
+        return String.format(Locale.GERMANY, "%.2f €", kwh * rate / 100);
+    }
+
+    private void updateHomeTariffStatus() {
+        boolean nightActive = isCheapNow();
+        if (homeDayTariffCard != null)
+            homeDayTariffCard.setBackground(UiKit.outlined(this,
+                    nightActive ? Color.rgb(246, 247, 248) : UiKit.AMBER_SOFT,
+                    nightActive ? UiKit.LINE : Color.rgb(239, 205, 119), 16));
+        if (homeNightTariffCard != null)
+            homeNightTariffCard.setBackground(UiKit.outlined(this,
+                    nightActive ? UiKit.PURPLE_SOFT : Color.rgb(246, 247, 248),
+                    nightActive ? Color.rgb(195, 173, 234) : UiKit.LINE, 16));
+        if (homeDayBadge != null) {
+            homeDayBadge.setText(nightActive ? "inaktiv" : "aktiv");
+            homeDayBadge.setTextColor(nightActive ? UiKit.MUTED : UiKit.GREEN_DARK);
+            homeDayBadge.setBackground(UiKit.roundRect(this,
+                    nightActive ? UiKit.LINE : UiKit.MINT, 50));
         }
-
-        content.addView(UiKit.sectionTitle(this, "Auf einen Blick"));
-        LinearLayout row1 = UiKit.row(this);
-        row1.setBaselineAligned(false);
-        row1.addView(metric(
-                "PV JETZT",
-                pv == null ? "—" : String.format(Locale.GERMANY, "%.0f W", pv.live.powerW),
-                "aktuelle Leistung",
-                UiKit.GREEN,
-                UiKit.MINT),
-                metricLp(true));
-
-        row1.addView(metric("STROMPREIS",
-                String.format(Locale.GERMANY, "%.0f ct/kWh", currentTariffPrice()),
-                isCheapNow() ? "Nachtstrom · günstig" : "Tagstrom · normal",
-                UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(false));
-        content.addView(row1);
-
-        LinearLayout row2 = UiKit.row(this);
-        row2.setBaselineAligned(false);
-        String tomorrow = forecast.size() > 1
-                ? String.format(Locale.GERMANY, "%.1f kWh", adjustedForecastKwh(forecast.get(1)))
-                : "—";
-        Double houseTotal = pvHouseTodayKwh();
-        row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
-                houseTotal == null
-                        ? new LinearLayout.LayoutParams(-1, -2)
-                        : metricLp(true));
-
-        if (houseTotal != null) {
-            row2.addView(metric("HAUS HEUTE",
-                            String.format(Locale.GERMANY, "%.1f kWh", houseTotal),
-                            "echter Hausverbrauch · PVOutput",
-                            UiKit.GREEN, UiKit.MINT),
-                    metricLp(false));
+        if (homeNightBadge != null) {
+            homeNightBadge.setText(nightActive ? "aktiv" : "inaktiv");
+            homeNightBadge.setTextColor(nightActive ? UiKit.GREEN_DARK : UiKit.MUTED);
+            homeNightBadge.setBackground(UiKit.roundRect(this,
+                    nightActive ? UiKit.MINT : UiKit.LINE, 50));
         }
-        content.addView(row2);
-
-        LocalDate yesterdayDate = LocalDate.now(BERLIN).minusDays(1);
-        EnergyPeriod yesterday = energyForRange(
-                yesterdayDate,
-                yesterdayDate,
-                "Gestern");
-        // Octopus may already expose a placeholder/validation record for yesterday
-        // before real consumption has arrived. Do not let a zero-kWh placeholder
-        // hide the last day that actually contains consumption.
-        EnergyPeriod gridDay = hasUsableGridConsumption(yesterday)
-                ? yesterday
-                : latestAvailableGridDay(yesterdayDate);
-        boolean gridIsYesterday = gridDay != null
-                && yesterdayDate.equals(gridDay.date);
-
-        content.addView(UiKit.sectionTitle(this,
-                gridIsYesterday ? "Gestern" : "Gestern / letzter Netzstand"));
-
-        LinearLayout yesterdayRow1 = UiKit.row(this);
-        yesterdayRow1.setBaselineAligned(false);
-        yesterdayRow1.addView(metric(
-                "PV-ERTRAG",
-                yesterday.hasPv
-                        ? String.format(Locale.GERMANY, "%.2f kWh", yesterday.pvKwh)
-                        : "—",
-                "gestern · eigener Solarstrom",
-                UiKit.GREEN,
-                UiKit.MINT), metricLp(true));
-        yesterdayRow1.addView(metric(
-                "NETZ HAUPTZEIT",
-                gridDay != null && gridDay.hasOctopus
-                        ? String.format(Locale.GERMANY, "%.2f kWh", gridDay.normalKwh)
-                        : "—",
-                gridDay != null && gridDay.hasOctopus
-                        ? gridDayDetail(gridDay, "Hauptzeit")
-                        : "Noch keine Octopus-Messwerte verfügbar",
-                UiKit.BLUE,
-                UiKit.BLUE_SOFT), metricLp(false));
-        content.addView(yesterdayRow1);
-
-        LinearLayout yesterdayRow2 = UiKit.row(this);
-        yesterdayRow2.setBaselineAligned(false);
-        yesterdayRow2.addView(metric(
-                "NETZ NEBENZEIT",
-                gridDay != null && gridDay.hasOctopus
-                        ? String.format(Locale.GERMANY, "%.2f kWh", gridDay.cheapKwh)
-                        : "—",
-                gridDay != null && gridDay.hasOctopus
-                        ? gridDayDetail(gridDay, "Nebenzeit")
-                        : "Noch keine Octopus-Messwerte verfügbar",
-                UiKit.PURPLE,
-                UiKit.PURPLE_SOFT), metricLp(true));
-        yesterdayRow2.addView(metric(
-                "KOSTEN",
-                gridDay != null && gridDay.hasOctopus
-                        ? String.format(Locale.GERMANY, "%.2f €", gridDay.costEuro)
-                        : "—",
-                gridDay != null && gridDay.hasOctopus
-                        ? "Netzbezug " + gridDayDisplayDate(gridDay) + " · geschätzt"
-                        : "Noch keine Octopus-Messwerte verfügbar",
-                UiKit.AMBER,
-                UiKit.AMBER_SOFT), metricLp(false));
-        content.addView(yesterdayRow2);
-
-        content.addView(UiKit.sectionTitle(this, "Verbindungen"));
-        LinearLayout statusCard = UiKit.card(this);
-        statusCard.addView(statusLine("PVOutput", pv != null,
-                pv != null ? "verbunden" : (pvError.isEmpty() ? "nicht eingerichtet" : "Fehler")));
-        statusCard.addView(UiKit.divider(this), dividerLp());
-        statusCard.addView(statusLine("Wetter & PV-Forecast", !forecast.isEmpty(),
-                !forecast.isEmpty() ? "aktuell" : (forecastError.isEmpty() ? "nicht eingerichtet" : "Fehler")));
-        statusCard.addView(UiKit.divider(this), dividerLp());
-        boolean smartMeterOk = octopus != null && octopus.smartMeterDataAvailable;
-        String octopusStatus;
-        if (smartMeterOk) {
-            octopusStatus = octopus.latestDate == null || octopus.latestDate.isEmpty()
-                    ? "Smart-Meter-Messwerte geladen"
-                    : "Messwerte bis " + friendlyOctopusDate(octopus.latestDate);
-        } else if (octopus != null) {
-            octopusStatus = "verbunden · noch keine Smart-Meter-Messwerte";
-        } else {
-            octopusStatus = octopusError.isEmpty() ? "optional" : "Fehler";
-        }
-        statusCard.addView(statusLine("Octopus Energy", smartMeterOk, octopusStatus));
-        statusCard.addView(UiKit.divider(this), dividerLp());
-        boolean mqttConfigured = prefs.getBool("watt_mqtt_enabled", false)
-                && !prefs.get("watt_mqtt_host", "").isEmpty();
-        statusCard.addView(statusLine("WattWächter MQTT", mqttConfigured
-                && wattSnapshot != null && "Verbunden".equals(wattSnapshot.state),
-                mqttConfigured ? (wattSnapshot == null ? "Verbindung wird aufgebaut"
-                        : wattSnapshot.state) : "optional · noch nicht eingerichtet"));
-        statusCard.addView(UiKit.divider(this), dividerLp());
-        boolean pi = !prefs.get("controller_url", "").isEmpty();
-        statusCard.addView(statusLine("Raspberry Controller", pi,
-                pi ? "Adresse hinterlegt" : "noch nicht verbunden"));
-        content.addView(statusCard);
-
-        Button refresh = UiKit.primaryButton(this, "Alle Daten aktualisieren");
-        refresh.setOnClickListener(v -> refreshAll());
-        content.addView(refresh, buttonLp());
-
-        LinearLayout note = UiKit.card(this);
-        note.addView(UiKit.overline(this, "NULL-EINSPEISUNG", UiKit.GREEN));
-        TextView noteTitle = UiKit.text(this, "PV sinnvoll nutzen statt abregeln", 18, UiKit.INK);
-        noteTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        noteTitle.setPadding(0, dp(7), 0, dp(5));
-        note.addView(noteTitle);
-        note.addView(UiKit.caption(this,
-                "Später nutzt der Raspberry PV-Prognose, Batterie, Wärmepumpe und EV-Lader gemeinsam, damit möglichst wenig Solarenergie abgeregelt wird."));
-        content.addView(note);
     }
 
     private void heroToday() {
