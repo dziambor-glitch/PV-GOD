@@ -689,7 +689,8 @@ public final class MainActivity extends Activity {
     private String annualCostBasisLabel() {
         return hasRepresentativeOctopusMix()
                 ? "Hochrechnung aus Octopus-Tarifmix · ohne Grundpreis"
-                : "Preisrahmen 19–29 ct/kWh · ohne Grundpreis";
+                : "Preisrahmen " + displayCheapRate() + "–" + displayNormalRate()
+                        + " ct/kWh · ohne Grundpreis";
     }
 
     private String pvNowLabel() {
