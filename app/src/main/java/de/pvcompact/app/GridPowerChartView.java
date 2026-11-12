@@ -27,6 +27,7 @@ public final class GridPowerChartView extends View {
     private final Paint mark = new Paint(Paint.ANTI_ALIAS_FLAG);
     private List<WattMeterHistoryStore.Point> points = new ArrayList<>();
     private List<WattMeterHistoryStore.Point> pvPoints = new ArrayList<>();
+    private List<WattMeterHistoryStore.Point> historicalNetPoints = new ArrayList<>();
     private long fromMs, toMs;
     private boolean fullDay;
 
@@ -53,6 +54,11 @@ public final class GridPowerChartView extends View {
         fromMs = from;
         toMs = to;
         fullDay = day;
+        invalidate();
+    }
+
+    public void setHistoricalNetData(List<WattMeterHistoryStore.Point> samples) {
+        historicalNetPoints = samples == null ? new ArrayList<>() : new ArrayList<>(samples);
         invalidate();
     }
 
@@ -83,6 +89,9 @@ public final class GridPowerChartView extends View {
             if (p.powerW > 0) maxPositive = Math.max(maxPositive, p.powerW);
             else maxExport = Math.max(maxExport, -p.powerW);
         }
+        for (WattMeterHistoryStore.Point p : historicalNetPoints)
+            if (p.timeMs >= fromMs && p.timeMs <= toMs && Double.isFinite(p.powerW))
+                maxPositive = Math.max(maxPositive, Math.max(0, p.powerW));
         for (WattMeterHistoryStore.Point p : pvPoints)
             if (p.timeMs >= fromMs && p.timeMs <= toMs && Double.isFinite(p.powerW))
                 maxPositive = Math.max(maxPositive, Math.max(0, p.powerW));
@@ -118,13 +127,16 @@ public final class GridPowerChartView extends View {
         label.setTextAlign(Paint.Align.RIGHT);
         canvas.drawText(fmt.format(new Date(toMs)), right, bottom + dp(19), label);
 
-        if (points.isEmpty() && pvPoints.isEmpty()) {
+        if (points.isEmpty() && pvPoints.isEmpty() && historicalNetPoints.isEmpty()) {
             label.setTextAlign(Paint.Align.CENTER);
             canvas.drawText("Noch keine Messwerte vorhanden", left + cw / 2, top + posH / 2, label);
             return;
         }
         canvas.save();
         canvas.clipRect(left, top, right, bottom);
+        drawTrace(canvas, historicalNetPoints, importPaint, exportPaint,
+                fromMs, span, left, cw, zeroY, posH, negH, maxPositive, maxExport,
+                20 * 60_000L, true);
         drawTrace(canvas, points, importPaint, exportPaint,
                 fromMs, span, left, cw, zeroY, posH, negH, maxPositive, maxExport,
                 fullDay ? 120000L : 45000L, true);
