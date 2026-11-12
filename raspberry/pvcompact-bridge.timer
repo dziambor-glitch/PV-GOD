@@ -1,0 +1,11 @@
+[Unit]
+Description=Synchronize WattWaechter daily history every three minutes
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=3min
+AccuracySec=15s
+Unit=pvcompact-bridge.service
+
+[Install]
+WantedBy=timers.target
