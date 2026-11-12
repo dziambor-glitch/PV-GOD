@@ -78,6 +78,8 @@ public final class MainActivity extends Activity {
     private long lastWattUiAt = 0L;
     private TextView wattPowerText, wattModeText, wattRegistersText, wattStateText;
     private TextView wattYearText, wattTodayText, wattLocalStatusText;
+    private TextView wattTodayCheapText, wattTodayNormalText, wattTodayCostText, wattTodaySourceText;
+    private TextView wattAnnualImportText, wattAnnualPvText, wattMeterValueText;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
 
@@ -341,11 +343,10 @@ public final class MainActivity extends Activity {
                 UiKit.MINT),
                 metricLp(true));
 
-        String consumption = pv != null && pv.live.consumptionW != null
-                ? String.format(Locale.GERMANY, "%.0f W", pv.live.consumptionW)
-                : "—";
-        row1.addView(metric("VERBRAUCH", consumption, "Haus aktuell", UiKit.BLUE, UiKit.BLUE_SOFT),
-                metricLp(false));
+        row1.addView(metric("STROMPREIS",
+                String.format(Locale.GERMANY, "%.0f ct/kWh", currentTariffPrice()),
+                isCheapNow() ? "Nachtstrom · günstig" : "Tagstrom · normal",
+                UiKit.PURPLE, UiKit.PURPLE_SOFT), metricLp(false));
         content.addView(row1);
 
         LinearLayout row2 = UiKit.row(this);
@@ -356,13 +357,14 @@ public final class MainActivity extends Activity {
         row2.addView(metric("MORGEN", tomorrow, "PV-Prognose", UiKit.AMBER, UiKit.AMBER_SOFT),
                 metricLp(true));
 
-        double price = currentTariffPrice();
-        row2.addView(metric("STROMPREIS",
-                        String.format(Locale.GERMANY, "%.0f ct", price),
-                        isCheapNow() ? "Go günstig aktiv" : "Go Normaltarif",
-                        UiKit.PURPLE,
-                        UiKit.PURPLE_SOFT),
-                metricLp(false));
+        Double houseTotal = pvHouseTodayKwh();
+        if (houseTotal != null) {
+            row2.addView(metric("HAUS HEUTE",
+                            String.format(Locale.GERMANY, "%.1f kWh", houseTotal),
+                            "echter Hausverbrauch · PVOutput",
+                            UiKit.GREEN, UiKit.MINT),
+                    metricLp(false));
+        }
         content.addView(row2);
 
         LocalDate yesterdayDate = LocalDate.now(BERLIN).minusDays(1);
@@ -1733,64 +1735,52 @@ public final class MainActivity extends Activity {
         return isWattExporting() ? UiKit.GREEN_DARK : UiKit.RED;
     }
 
-    private String wattRegisterLabel() {
+    private Double currentRegisterKwh() {
         WattMeterMqttClient.Snapshot s = wattSnapshot;
-        if (s == null || s.importKwh == null) return "Aktueller Zählerstand: —";
-        return String.format(Locale.GERMANY, "Aktueller Zählerstand: %,.3f kWh", s.importKwh);
+        if (s != null && s.importKwh != null && Double.isFinite(s.importKwh))
+            return s.importKwh;
+        WattMeterLocalHistory.Day d = localToday;
+        if (d != null && LocalDate.now(BERLIN).toString().equals(d.date)
+                && d.currentMeterKwh != null && Double.isFinite(d.currentMeterKwh))
+            return d.currentMeterKwh;
+        return null;
+    }
+
+    private String wattRegisterLabel() {
+        Double value = currentRegisterKwh();
+        if (value == null) return "—";
+        return String.format(Locale.GERMANY, "%,.3f kWh", value);
+    }
+
+    private String annualImportLabel() {
+        Double meter = currentRegisterKwh();
+        if (meter == null) return "—";
+        int year = LocalDate.now(BERLIN).getYear();
+        if (year == 2026) {
+            // Smart meter commissioned with zero baseline in March 2026.
+            return String.format(Locale.GERMANY, "%,.1f kWh", meter);
+        }
+        WattMeterHistoryStore.YearAnchor anchor = null;
+        try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
+        if (anchor == null || meter < anchor.importKwh) return "—";
+        return String.format(Locale.GERMANY, "%,.1f kWh", meter - anchor.importKwh);
+    }
+
+    private String annualPvLabel() {
+        int year = LocalDate.now(BERLIN).getYear();
+        return hasPvYear(year)
+                ? String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(year)) : "—";
     }
 
     private String wattYearLabel() {
         int year = LocalDate.now(BERLIN).getYear();
-        WattMeterMqttClient.Snapshot s = wattSnapshot;
-        String net = "—";
-        String rangeNote = "Basiswert fehlt";
-        if (s != null && s.importKwh != null) {
-            if (year == 2026) {
-                // The E320 was commissioned with a new meter in March 2026.
-                net = String.format(Locale.GERMANY, "%,.2f kWh", s.importKwh);
-                rangeNote = "seit Zählereinbau März 2026";
-            } else {
-                WattMeterHistoryStore.YearAnchor anchor = null;
-                try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
-                if (anchor != null && s.importKwh >= anchor.importKwh) {
-                    net = String.format(Locale.GERMANY, "%,.2f kWh",
-                            s.importKwh - anchor.importKwh);
-                    rangeNote = "seit " + new java.text.SimpleDateFormat("dd.MM. HH:mm", Locale.GERMANY)
-                            .format(new java.util.Date(anchor.firstObservedMs))
-                            + " Uhr (erster erfasster Stand)";
-                }
-            }
-        }
-
-        String pvAnnual = hasPvYear(year)
-                ? String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(year)) : "—";
-        StringBuilder result = new StringBuilder();
-        result.append("Netzbezug ").append(year).append(": ").append(net)
-                .append("\n").append(rangeNote)
-                .append("\nPV-Erzeugung ").append(year).append(": ").append(pvAnnual);
-
-        if (year > 2026) {
-            int prev = year - 1;
-            WattMeterHistoryStore.YearAnchor newAnchor = null;
-            WattMeterHistoryStore.YearAnchor prevAnchor = null;
-            try {
-                newAnchor = wattHistory.yearAnchor(year);
-                prevAnchor = wattHistory.yearAnchor(prev);
-            } catch (Exception ignored) {}
-            Double previousImport = null;
-            if (newAnchor != null) {
-                if (prev == 2026) previousImport = newAnchor.importKwh;
-                else if (prevAnchor != null && newAnchor.importKwh >= prevAnchor.importKwh)
-                    previousImport = newAnchor.importKwh - prevAnchor.importKwh;
-            }
-            if (previousImport != null) result.append("\nNetzbezug ").append(prev)
-                    .append(": ")
-                    .append(String.format(Locale.GERMANY, "%,.2f kWh", previousImport))
-                    .append(" (bis erstem Stand ").append(year).append(")");
-            if (hasPvYear(prev)) result.append("\nPV-Erzeugung ").append(prev).append(": ")
-                    .append(String.format(Locale.GERMANY, "%,.1f kWh", pvForYear(prev)));
-        }
-        return result.toString();
+        if (year == 2026) return "Netzbezug seit Einbau des neuen Zählers im März 2026";
+        WattMeterHistoryStore.YearAnchor anchor = null;
+        try { anchor = wattHistory.yearAnchor(year); } catch (Exception ignored) {}
+        if (anchor == null) return "Jahresbeginn noch nicht erfasst; kein geschätzter Nullwert";
+        return "Seit erster Ablesung am " +
+                new java.text.SimpleDateFormat("dd.MM. HH:mm", Locale.GERMANY)
+                    .format(new java.util.Date(anchor.firstObservedMs)) + " Uhr";
     }
 
     private Double pvTodayKwh() {
