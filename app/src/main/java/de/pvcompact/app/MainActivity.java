@@ -523,6 +523,175 @@ public final class MainActivity extends Activity {
         // The former "PV sinnvoll nutzen statt abregeln" promotion is omitted.
     }
 
+    // Forecast values are matched by calendar date instead of relying on a
+    // fixed position in the Open-Meteo response. The UI never invents kWh.
+    private ForecastClient.Day homeForecastFor(int daysFromToday) {
+        String date = LocalDate.now(BERLIN).plusDays(daysFromToday).toString();
+        for (ForecastClient.Day d : forecast)
+            if (d != null && date.equals(d.date)) return d;
+        return null;
+    }
+
+    private String homeForecastValue(ForecastClient.Day day) {
+        if (day == null || !Double.isFinite(day.energyKwh) || day.energyKwh < 0)
+            return "—";
+        double kwh = adjustedForecastKwh(day);
+        if (!Double.isFinite(kwh) || kwh < 0) return "—";
+        return String.format(Locale.GERMANY, "%.1f kWh", kwh);
+    }
+
+    private void addHomeForecast() {
+        LinearLayout row = UiKit.row(this);
+        row.setGravity(Gravity.TOP);
+        row.setBaselineAligned(false);
+
+        LocalDate tomorrowDate = LocalDate.now(BERLIN).plusDays(1);
+        ForecastClient.Day tomorrow = homeForecastFor(1);
+        LinearLayout main = UiKit.card(this);
+        main.setMinimumHeight(dp(205));
+        main.setPadding(dp(13), dp(14), dp(10), dp(12));
+        main.addView(UiKit.overline(this, "PV-FORECAST MORGEN · " +
+                tomorrowDate.format(DateTimeFormatter.ofPattern("dd.MM.", Locale.GERMANY)),
+                UiKit.GREEN_DARK));
+
+        LinearLayout primary = UiKit.row(this);
+        TextView primaryIcon = UiKit.text(this,
+                tomorrow == null ? "◌" : weatherIcon(tomorrow.weatherCode),
+                40, UiKit.AMBER);
+        primaryIcon.setGravity(Gravity.CENTER);
+        primary.addView(primaryIcon, new LinearLayout.LayoutParams(dp(52), dp(68)));
+        LinearLayout primaryNumbers = new LinearLayout(this);
+        primaryNumbers.setOrientation(LinearLayout.VERTICAL);
+        TextView primaryEnergy = UiKit.text(this, homeForecastValue(tomorrow),
+                25, UiKit.GREEN_DARK);
+        primaryEnergy.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        primaryEnergy.setSingleLine(true);
+        primaryEnergy.setTextSize(25);
+        primaryEnergy.setAutoSizeTextTypeWithDefaults(TextView.AUTO_SIZE_TEXT_TYPE_UNIFORM);
+        primaryEnergy.setAutoSizeTextTypeUniformWithConfiguration(16, 25, 1,
+                android.util.TypedValue.COMPLEX_UNIT_SP);
+        primaryNumbers.addView(primaryEnergy);
+        primaryNumbers.addView(UiKit.caption(this,
+                tomorrow == null ? "Prognose noch nicht verfügbar" : "Prognose für morgen"));
+        primary.addView(primaryNumbers, new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout.LayoutParams primaryLp = new LinearLayout.LayoutParams(-1, -2);
+        primaryLp.setMargins(0, dp(22), 0, 0);
+        main.addView(primary, primaryLp);
+        main.setOnClickListener(v -> showTab("Forecast"));
+        main.setClickable(true);
+        LinearLayout.LayoutParams mainLp = new LinearLayout.LayoutParams(0, -2, 1.12f);
+        mainLp.setMargins(0, 0, dp(6), dp(12));
+        row.addView(main, mainLp);
+
+        LinearLayout nextDays = new LinearLayout(this);
+        nextDays.setOrientation(LinearLayout.VERTICAL);
+        ForecastClient.Day following = homeForecastFor(2);
+        LocalDate followingDate = LocalDate.now(BERLIN).plusDays(2);
+        nextDays.addView(homeSmallForecast(
+                "ÜBERMORGEN · " +
+                        followingDate.format(DateTimeFormatter.ofPattern("dd.MM.", Locale.GERMANY)),
+                following));
+        ForecastClient.Day third = homeForecastFor(3);
+        LocalDate thirdDate = LocalDate.now(BERLIN).plusDays(3);
+        String weekday = thirdDate.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.GERMANY);
+        nextDays.addView(homeSmallForecast(
+                weekday.toUpperCase(Locale.GERMANY) + " · " +
+                        thirdDate.format(DateTimeFormatter.ofPattern("dd.MM.", Locale.GERMANY)),
+                third));
+        LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(0, -2, 0.88f);
+        sideLp.setMargins(dp(6), 0, 0, 0);
+        row.addView(nextDays, sideLp);
+        content.addView(row);
+    }
+
+    private LinearLayout homeSmallForecast(String heading, ForecastClient.Day day) {
+        LinearLayout card = UiKit.card(this);
+        card.setPadding(dp(9), dp(10), dp(8), dp(10));
+        card.addView(UiKit.overline(this, heading, UiKit.GREEN_DARK));
+        LinearLayout line = UiKit.row(this);
+        TextView weather = UiKit.text(this, day == null ? "◌" : weatherIcon(day.weatherCode),
+                26, UiKit.AMBER);
+        line.addView(weather);
+        TextView energy = UiKit.text(this, homeForecastValue(day), 18, UiKit.INK);
+        energy.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        energy.setPadding(dp(6), dp(7), 0, dp(3));
+        energy.setSingleLine(true);
+        energy.setAutoSizeTextTypeWithDefaults(TextView.AUTO_SIZE_TEXT_TYPE_UNIFORM);
+        energy.setAutoSizeTextTypeUniformWithConfiguration(12, 18, 1,
+                android.util.TypedValue.COMPLEX_UNIT_SP);
+        line.addView(energy, new LinearLayout.LayoutParams(0, -2, 1f));
+        card.addView(line);
+        card.setOnClickListener(v -> showTab("Forecast"));
+        card.setClickable(true);
+        return card;
+    }
+
+    private Double annualGridKwh() {
+        Double meter = currentRegisterKwh();
+        if (meter == null || !Double.isFinite(meter) || meter < 0) return null;
+        int year = LocalDate.now(BERLIN).getYear();
+        if (year == 2026) return meter;
+        try {
+            WattMeterHistoryStore.YearAnchor anchor = wattHistory.yearAnchor(year);
+            if (anchor != null && meter >= anchor.importKwh) return meter - anchor.importKwh;
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private boolean hasRepresentativeOctopusMix() {
+        if (octopus == null) return false;
+        int year = LocalDate.now(BERLIN).getYear();
+        int days = 0;
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+            if (d == null || d.date == null || !d.date.startsWith(year + "-")
+                    || !seen.add(d.date) || !Double.isFinite(d.totalKwh)
+                    || !Double.isFinite(d.cheapKwh) || !Double.isFinite(d.normalKwh)
+                    || d.totalKwh <= 0 || d.cheapKwh < 0 || d.normalKwh < 0) continue;
+            if (d.cheapKwh + d.normalKwh > 0.01) days++;
+        }
+        return days >= 7;
+    }
+
+    private String annualCostEstimateLabel() {
+        Double annualKwh = annualGridKwh();
+        if (annualKwh == null) return "—";
+        double cheapRate = octopus != null && Double.isFinite(octopus.cheapCents)
+                ? octopus.cheapCents : displayCheapRate();
+        double normalRate = octopus != null && Double.isFinite(octopus.normalCents)
+                ? octopus.normalCents : displayNormalRate();
+        if (hasRepresentativeOctopusMix()) {
+            int year = LocalDate.now(BERLIN).getYear();
+            double cheap = 0.0, normal = 0.0;
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            for (OctopusClient.DailyUsage d : octopus.dailyHistory) {
+                if (d == null || d.date == null || !d.date.startsWith(year + "-")
+                        || !seen.add(d.date) || !Double.isFinite(d.cheapKwh)
+                        || !Double.isFinite(d.normalKwh) || d.cheapKwh < 0 || d.normalKwh < 0)
+                    continue;
+                cheap += d.cheapKwh;
+                normal += d.normalKwh;
+            }
+            if (cheap + normal > 0) {
+                double weightedCents = (cheap * cheapRate + normal * normalRate)
+                        / (cheap + normal);
+                return String.format(Locale.GERMANY, "ca. %,.2f €",
+                        annualKwh * weightedCents / 100.0);
+            }
+        }
+        // Without an observed tariff mix, give the honest work-price bounds:
+        // multiplying all annual kWh by 29 ct overstates the user's low-price charging.
+        double low = annualKwh * Math.min(cheapRate, normalRate) / 100.0;
+        double high = annualKwh * Math.max(cheapRate, normalRate) / 100.0;
+        return String.format(Locale.GERMANY, "ca. %,.0f–%,.0f €", low, high);
+    }
+
+    private String annualCostBasisLabel() {
+        return hasRepresentativeOctopusMix()
+                ? "Hochrechnung aus Octopus-Tarifmix · ohne Grundpreis"
+                : "Preisrahmen 19–29 ct/kWh · ohne Grundpreis";
+    }
+
     private String pvNowLabel() {
         if (pv == null || pv.live == null || !Double.isFinite(pv.live.powerW)) return "—";
         return String.format(Locale.GERMANY, "%.0f W", Math.max(0, pv.live.powerW));
