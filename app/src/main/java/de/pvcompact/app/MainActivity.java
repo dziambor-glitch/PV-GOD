@@ -130,6 +130,37 @@ public final class MainActivity extends Activity {
                 && now - lastOctopusRefreshRequestMs > 45 * 60_000L) refreshOctopus();
     }
 
+    private void receiveCloudHistory(String rawJson) {
+        // Invoked by MQTT callback; never decode JSON or touch SQLite on that thread.
+        io.execute(() -> {
+            try {
+                WattMeterLocalHistory.Day day = WattMeterLocalHistory.ingestCloud(
+                        this, rawJson, currentCheapStart(), currentCheapEnd());
+                WattMeterLocalHistory.Day old = localToday;
+                if (old != null && LocalDate.now(BERLIN).toString().equals(old.date)
+                        && old.fetchedAtMs > day.fetchedAtMs) return;
+                localToday = day;
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    lastWattChartAt = 0L;
+                    updateWattMeterTexts();
+                    if (wattHomeChart != null) wattHomeChart.setHistoricalNetData(day.curve);
+                    if (wattHourChart != null) wattHourChart.setHistoricalNetData(day.curve);
+                    if (wattDayChart != null) wattDayChart.setHistoricalNetData(day.curve);
+                });
+            } catch (Exception ignored) {
+                // Retained messages from the previous day are expected across midnight.
+                // They must never be presented as today's energy or as fake zero values.
+            }
+        });
+    }
+
+    private boolean cloudHistoryAvailable() {
+        WattMeterLocalHistory.Day d = localToday;
+        return d != null && d.fromCloud
+                && LocalDate.now(BERLIN).toString().equals(d.date);
+    }
+
     private void maybeSyncWattHistory() {
         // Local REST history is independent of the optional MQTT connection.
         long now = System.currentTimeMillis();
@@ -202,10 +233,20 @@ public final class MainActivity extends Activity {
     }
 
     private String historyDiagnosticText() {
+        if (cloudHistoryAvailable()) {
+            WattMeterLocalHistory.Day cloud = localToday;
+            String stamp = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
+                    .format(new java.util.Date(cloud.fetchedAtMs));
+            return "Tageshistorie via EMQX Cloud · Stand " + stamp
+                    + " Uhr · LAN erneut laden";
+        }
         return "Lokale Historie: " + localHistoryStatus + " · Tippen zum erneuten Laden";
     }
 
     private int historyDiagnosticColor() {
+        if (cloudHistoryAvailable())
+            return System.currentTimeMillis() - localToday.fetchedAtMs < 45L * 60_000L
+                    ? UiKit.GREEN_DARK : UiKit.AMBER;
         if (localHistoryStatus.startsWith("Tageshistorie synchronisiert"))
             return UiKit.GREEN_DARK;
         if (localHistoryStatus.startsWith("Abruf fehlgeschlagen")
@@ -2088,7 +2129,8 @@ public final class MainActivity extends Activity {
                         if (now - lastWattUiAt < 900L) return;
                         lastWattUiAt = now;
                         runOnUiThread(this::updateWattMeterTexts);
-                    }
+                    },
+                    this::receiveCloudHistory
             );
         } catch (Exception e) {
             wattError = cleanError(e);
@@ -2230,7 +2272,8 @@ public final class MainActivity extends Activity {
             t.splitAvailable = saved.tariffSplitAvailable || saved.importKwh == 0;
             String stamp = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
                     .format(new java.util.Date(saved.fetchedAtMs));
-            t.status = "WattWächter · 15-Min-Verlauf · Stand " + stamp + " Uhr";
+            t.status = (saved.fromCloud ? "WattWächter via EMQX Cloud" : "WattWächter lokal")
+                    + " · 15-Min-Verlauf · Stand " + stamp + " Uhr";
         } else {
             long midnight = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
             WattMeterHistoryStore.DayEstimate e = null;
