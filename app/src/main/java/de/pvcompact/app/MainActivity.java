@@ -81,7 +81,7 @@ public final class MainActivity extends Activity {
     private TextView wattTodayCheapText, wattTodayNormalText, wattTodayCostText, wattTodaySourceText;
     private TextView wattAnnualImportText, wattAnnualPvText, wattMeterValueText;
     private TextView homePvLiveText, homePvTodayText, homePvSavingText, homeActiveTariffText;
-    private TextView homeDayBadge, homeNightBadge;
+    private TextView homeDayBadge, homeNightBadge, homeDayCostText, homeNightCostText, homeLiveBadge;
     private LinearLayout homeDayTariffCard, homeNightTariffCard;
     private GridPowerChartView wattHomeChart, wattHourChart, wattDayChart;
     private long lastWattChartAt = 0L;
@@ -334,8 +334,9 @@ public final class MainActivity extends Activity {
         titleWords.addView(wattName);
         titleWords.addView(UiKit.caption(this, "Aktuelle Leistung & Tagesbilanz"));
         title.addView(titleWords, new LinearLayout.LayoutParams(0, -2, 1f));
-        wattStateText = UiKit.pill(this, "● Live", UiKit.GREEN_DARK, UiKit.MINT);
-        title.addView(wattStateText);
+        homeLiveBadge = UiKit.pill(this, isWattFresh() ? "● Live" : "○ Lädt",
+                isWattFresh() ? UiKit.GREEN_DARK : UiKit.MUTED, UiKit.MINT);
+        title.addView(homeLiveBadge);
         live.addView(title);
 
         LinearLayout liveMetrics = UiKit.row(this);
@@ -403,6 +404,17 @@ public final class MainActivity extends Activity {
         tariffRow.addView(homeNightTariffCard, metricLp(false));
         content.addView(tariffRow);
         updateHomeTariffStatus();
+
+        // The total is shown once, below the time-of-use details.
+        LinearLayout costCard = UiKit.card(this);
+        LinearLayout costLine = UiKit.row(this);
+        costLine.addView(UiKit.caption(this, "Geschätzte Stromkosten heute"),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        wattTodayCostText = UiKit.text(this, wattCostLabel(), 20, UiKit.PURPLE);
+        wattTodayCostText.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        costLine.addView(wattTodayCostText);
+        costCard.addView(costLine);
+        content.addView(costCard);
 
         // 3. Double-height graph with actual WattWächter history and PVOutput.
         LinearLayout graphCard = UiKit.card(this);
@@ -2076,6 +2088,11 @@ public final class MainActivity extends Activity {
         }
         if (wattRegistersText != null) wattRegistersText.setText(wattRegisterLabel());
         if (wattStateText != null) wattStateText.setText(wattStateLabel());
+        if (homeLiveBadge != null) {
+            boolean live = isWattFresh();
+            homeLiveBadge.setText(live ? "● Live" : "○ Warte");
+            homeLiveBadge.setTextColor(live ? UiKit.GREEN_DARK : UiKit.MUTED);
+        }
         long now = System.currentTimeMillis();
         if (now - lastWattChartAt < 5000L) return;
         lastWattChartAt = now;
@@ -2088,6 +2105,14 @@ public final class MainActivity extends Activity {
         if (wattTodayNormalText != null) wattTodayNormalText.setText(wattNormalLabel());
         if (wattTodayCostText != null) wattTodayCostText.setText(wattCostLabel());
         if (wattTodaySourceText != null) wattTodaySourceText.setText(todayTariffs().status);
+        if (homePvLiveText != null) homePvLiveText.setText(pvNowLabel());
+        if (homePvTodayText != null) homePvTodayText.setText(pvTodayLabel());
+        if (homePvSavingText != null) homePvSavingText.setText(annualPvSavingsLabel());
+        if (homeDayCostText != null) homeDayCostText.setText(displayNormalRate()
+                + " ct/kWh · " + tariffCostLabel(false));
+        if (homeNightCostText != null) homeNightCostText.setText(displayCheapRate()
+                + " ct/kWh · " + tariffCostLabel(true));
+        if ("Home".equals(currentTab)) updateHomeTariffStatus();
         if (wattLocalStatusText != null) wattLocalStatusText.setText("Synchronisierung: " + localHistoryStatus);
         if (!("Netz".equals(currentTab) || "Home".equals(currentTab))) return;
         try {
