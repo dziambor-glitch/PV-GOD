@@ -1841,7 +1841,29 @@ public final class MainActivity extends Activity {
                     currentCheapStart(), currentCheapEnd());
         } catch (Exception ignored) {}
         StringBuilder result = new StringBuilder();
-        if (e != null && e.intervals > 0) {
+        WattMeterLocalHistory.Day saved = localToday;
+        if (saved != null && LocalDate.now(BERLIN).toString().equals(saved.date)) {
+            String asOf = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
+                    .format(new java.util.Date(saved.fetchedAtMs));
+            double cheapRate = parseDouble(prefs.get("cheap_price", "19"), 19);
+            double normalRate = parseDouble(prefs.get("normal_price", "29"), 29);
+            if (octopus != null && Double.isFinite(octopus.cheapCents)) cheapRate = octopus.cheapCents;
+            if (octopus != null && Double.isFinite(octopus.normalCents)) normalRate = octopus.normalCents;
+            result.append(String.format(Locale.GERMANY,
+                    "Netzbezug heute: %.2f kWh\n", saved.importKwh));
+            if (saved.cheapKwh + saved.normalKwh > 0 || saved.importKwh == 0) {
+                result.append(String.format(Locale.GERMANY,
+                        "Stromkosten (geschätzt): %.2f €\n",
+                        saved.estimatedEuro(cheapRate, normalRate)));
+                result.append(String.format(Locale.GERMANY,
+                        "Davon Nacht: ca. %.2f kWh · Tag: ca. %.2f kWh\n",
+                        saved.cheapKwh, saved.normalKwh));
+            } else {
+                result.append("Kosten: noch keine Tarifaufteilung verfügbar\n");
+            }
+            result.append("Quelle: WattWächter Tageshistorie · Stand ").append(asOf)
+                    .append(" Uhr · 15-Minuten-Auflösung");
+        } else if (e != null && e.intervals > 0) {
             String since = new java.text.SimpleDateFormat("HH:mm", Locale.GERMANY)
                     .format(new java.util.Date(e.firstMs));
             double cheapRate = parseDouble(prefs.get("cheap_price", "19"), 19);
@@ -1941,15 +1963,24 @@ public final class MainActivity extends Activity {
                 long from = now - 3600000L;
                 wattHourChart.setData(wattHistory.load(from, now), from, now, false);
                 wattHourChart.setPvData(pvOutputPlotPoints(from, now));
+                WattMeterLocalHistory.Day d = localToday;
+                if (d != null && LocalDate.now(BERLIN).toString().equals(d.date))
+                    wattHourChart.setHistoricalNetData(d.curve);
             }
             long start = LocalDate.now(BERLIN).atStartOfDay(BERLIN).toInstant().toEpochMilli();
             if ("Netz".equals(currentTab) && wattDayChart != null) {
                 wattDayChart.setData(wattHistory.load(start, now), start, now, true);
                 wattDayChart.setPvData(pvOutputPlotPoints(start, now));
+                WattMeterLocalHistory.Day d = localToday;
+                if (d != null && LocalDate.now(BERLIN).toString().equals(d.date))
+                    wattDayChart.setHistoricalNetData(d.curve);
             }
             if ("Home".equals(currentTab) && wattHomeChart != null) {
                 wattHomeChart.setData(wattHistory.load(start, now), start, now, true);
                 wattHomeChart.setPvData(pvOutputPlotPoints(start, now));
+                WattMeterLocalHistory.Day day = localToday;
+                if (day != null && LocalDate.now(BERLIN).toString().equals(day.date))
+                    wattHomeChart.setHistoricalNetData(day.curve);
             }
         } catch (Exception ignored) {}
     }
@@ -1991,7 +2022,8 @@ public final class MainActivity extends Activity {
         wattTodayText.setLineSpacing(dp(2), 1.08f);
         card.addView(wattTodayText);
         card.addView(UiKit.caption(this,
-                "PV-Wertpotenzial ist keine nachgewiesene Ersparnis. Mit Batterie können Eigenverbrauch, Ladung und Entladung abweichen."));
+                "Historie: " + localHistoryStatus
+                + ". PV-Wertpotenzial ist keine nachgewiesene Ersparnis; Batterieflüsse sind noch nicht erfasst."));
 
         if (homeGraph) {
             long now = System.currentTimeMillis();
@@ -2004,6 +2036,9 @@ public final class MainActivity extends Activity {
             try {
                 wattHomeChart.setData(wattHistory.load(start, now), start, now, true);
                 wattHomeChart.setPvData(pvOutputPlotPoints(start, now));
+                WattMeterLocalHistory.Day day = localToday;
+                if (day != null && LocalDate.now(BERLIN).toString().equals(day.date))
+                    wattHomeChart.setHistoricalNetData(day.curve);
             } catch (Exception ignored) {}
             card.addView(wattHomeChart, new LinearLayout.LayoutParams(-1, dp(218)));
             card.addView(UiKit.caption(this,
@@ -2051,6 +2086,9 @@ public final class MainActivity extends Activity {
         try { points = wattHistory.load(fromMs, toMs); } catch (Exception ignored) {}
         chart.setData(points, fromMs, toMs, day);
         chart.setPvData(pvOutputPlotPoints(fromMs, toMs));
+        WattMeterLocalHistory.Day d = localToday;
+        if (d != null && LocalDate.now(BERLIN).toString().equals(d.date))
+            chart.setHistoricalNetData(d.curve);
         card.addView(chart, new LinearLayout.LayoutParams(-1, dp(240)));
         card.addView(UiKit.caption(this,
                 "Echte Messwerte aus PVOutput und WattWächter · keine künstlichen Nullwerte"));
